@@ -25,6 +25,7 @@
 #include <driver/i2s.h>
 #include <math.h>
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CYD_TEST)
+#include <driver/dac.h>
 #define CYD 1                               // built for the YELLOW 2.8 inch board (ESP32-2432S028): screen 14 12 13 15 2 21, touch 25 32 39 33, speaker 26, relays on 22 and 27 (plug CN1)
 #else
 #define CYD 0
@@ -6327,18 +6328,24 @@ bool tpRead(int &x, int &y){
   y = (r == 0 || r == 3) ? tx : 239 - tx;
   return true;
 }
+int tpZ = 0, tpLX = -1, tpLY = -1;                           // last press strength and place (shown on the setup page, to check the touch)
 // yellow board: XPT2046 touch chip (the kind you press) on pins 25 (clock) 32 (out) 39 (in) 33 (pick)
 int xpt(uint8_t cmd){
   int v = 0;
-  for(int b = 7; b >= 0; b--){ digitalWrite(32, (cmd >> b) & 1); digitalWrite(25, HIGH); digitalWrite(25, LOW); }
-  for(int b = 0; b < 16; b++){ digitalWrite(25, HIGH); v = (v << 1) | (digitalRead(39) ? 1 : 0); digitalWrite(25, LOW); }
+  for(int b = 7; b >= 0; b--){ digitalWrite(32, (cmd >> b) & 1); delayMicroseconds(2); digitalWrite(25, HIGH); delayMicroseconds(3); digitalWrite(25, LOW); delayMicroseconds(2); }      // slow, steady clock: this chip cannot follow a fast one
+  for(int b = 0; b < 16; b++){ digitalWrite(25, HIGH); delayMicroseconds(3); v = (v << 1) | (digitalRead(39) ? 1 : 0); digitalWrite(25, LOW); delayMicroseconds(3); }
   return (v >> 3) & 0xFFF;
 }
-void tpInit3(){ pinMode(33, OUTPUT); digitalWrite(33, HIGH); pinMode(25, OUTPUT); digitalWrite(25, LOW); pinMode(32, OUTPUT); pinMode(39, INPUT); pinMode(36, INPUT); tpOk = true; }
+void tpInit3(){
+#if CYD
+  dac_output_disable(DAC_CHANNEL_1);                              // pin 25 belongs to the touch, not to the sound
+#endif
+  pinMode(33, OUTPUT); digitalWrite(33, HIGH); pinMode(25, OUTPUT); digitalWrite(25, LOW); pinMode(32, OUTPUT); pinMode(39, INPUT); pinMode(36, INPUT); tpOk = true; digitalWrite(33, LOW); xpt(0xD0); digitalWrite(33, HIGH); }
 bool tpRead3(int &x, int &y){
-  digitalWrite(33, LOW);
+  digitalWrite(33, LOW); delayMicroseconds(5);
   int z1 = xpt(0xB1), z2 = xpt(0xC1), z = z1 + 4095 - z2;
-  if(z < 450){ xpt(0xD0); digitalWrite(33, HIGH); return false; }      // not pressed hard enough
+  tpZ = z;
+  if(z < 300){ xpt(0xD0); digitalWrite(33, HIGH); return false; }      // not pressed hard enough
   long a = 0, b = 0; xpt(0x91);
   for(int k = 0; k < 4; k++){ a += xpt(0x91); b += xpt(0xD1); }
   xpt(0xD0); digitalWrite(33, HIGH);
@@ -6347,6 +6354,7 @@ bool tpRead3(int &x, int &y){
   int r = (lcdRot + tpFlip) & 3;
   x = (r == 0 || r == 3) ? sx : 319 - sx;
   y = (r == 0 || r == 2) ? sy : 239 - sy;
+  tpLX = x; tpLY = y;
   return true;
 }
 void tpLoop(){
@@ -6441,7 +6449,8 @@ String page(const String& note){
   h += "<button>Save and restart</button></form><div class=card><b>Test</b> <small>(you should hear a click or a beep)</small>";
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
-  h += "</div><small>AmyRelay 4.2 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + "</small>";
+  h += "</div><small>AmyRelay 4.3 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6496,7 +6505,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 4.2 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("AmyRelay 4.3 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
