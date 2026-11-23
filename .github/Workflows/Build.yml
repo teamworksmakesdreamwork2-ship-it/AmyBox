@@ -1,0 +1,50 @@
+name: Build AmyRelay firmware
+on:
+  push: { branches: [ main, master ] }
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put the sketch in its folder
+        run: |
+          if [ -f AmyRelay.ino ] && [ ! -f AmyRelay/AmyRelay.ino ]; then
+            mkdir -p AmyRelay && mv AmyRelay.ino AmyRelay/AmyRelay.ino
+          fi
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
+          pip install --quiet esptool
+      - name: Compile for ESP32-S3
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --export-binaries ./AmyRelay
+      - name: Merge into one flashable .bin (flash at 0x0)
+        run: |
+          B=./AmyRelay/build/esp32.esp32.esp32s3
+          CORE=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32s3 merge_bin -o AmyRelay-merged.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x0    "$B"/AmyRelay.ino.bootloader.bin \
+            0x8000 "$B"/AmyRelay.ino.partitions.bin \
+            0xe000 "$CORE" \
+            0x10000 "$B"/AmyRelay.ino.bin
+      - name: Upload the firmware file
+        uses: actions/upload-artifact@v4
+        with:
+          name: AmyRelay-merged-bin
+          path: AmyRelay-merged.bin
+      - name: Also publish as a release (easy phone download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: AmyRelay firmware (flash this)
+          files: AmyRelay-merged.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
