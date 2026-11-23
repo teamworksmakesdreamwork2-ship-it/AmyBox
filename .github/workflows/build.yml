@@ -1,0 +1,37 @@
+name: Build AmyRelay
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Move sketch
+        run: |
+          mkdir -p AmyRelay
+          if [ -f AmyRelay.ino ]; then mv AmyRelay.ino AmyRelay/; fi
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
+      - name: Compile
+        run: arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir out AmyRelay
+      - name: Merge bin
+        run: |
+          pip install esptool==4.8.1
+          BA=~/.arduino15/packages/esp32/hardware/esp32/2.0.17/tools/partitions/boot_app0.bin
+          python3 -m esptool --chip esp32s3 merge_bin -o out/AmyRelay-merged.bin 0x0 out/AmyRelay.ino.bootloader.bin 0x8000 out/AmyRelay.ino.partitions.bin 0xe000 $BA 0x10000 out/AmyRelay.ino.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AmyRelay
+          path: out/AmyRelay-merged.bin
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: out/AmyRelay-merged.bin
