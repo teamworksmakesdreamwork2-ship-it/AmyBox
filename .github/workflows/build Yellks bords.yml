@@ -1,0 +1,42 @@
+name: Build AmyRelay
+on:
+  push: { branches: [ main, master ] }
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Move sketch
+        run: |
+          mkdir -p AmyRelay
+          if [ -f AmyRelay.ino ]; then mv -f AmyRelay.ino AmyRelay/AmyRelay.ino; fi
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
+          pip install --quiet esptool==4.8.1
+      - name: Black touch box (ESP32-S3)
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir out AmyRelay
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32s3 merge_bin -o AmyRelay-merged.bin --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x0 out/AmyRelay.ino.bootloader.bin 0x8000 out/AmyRelay.ino.partitions.bin 0xe000 "$BOOT" 0x10000 out/AmyRelay.ino.bin
+      - name: Yellow touch board (ESP32-2432S028)
+        continue-on-error: true
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --output-dir outy AmyRelay
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32 merge_bin -o Yellow-merged.bin --flash_mode dio --flash_freq 40m --flash_size 4MB \
+            0x1000 outy/AmyRelay.ino.bootloader.bin 0x8000 outy/AmyRelay.ino.partitions.bin 0xe000 "$BOOT" 0x10000 outy/AmyRelay.ino.bin
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: AmyRelay firmware (flash this)
+          files: |
+            AmyRelay-merged.bin
+            Yellow-merged.bin
