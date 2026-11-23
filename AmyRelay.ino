@@ -24,6 +24,11 @@
 #include <Wire.h>
 #include <driver/i2s.h>
 #include <math.h>
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CYD_TEST)
+#define CYD 1                               // built for the YELLOW 2.8 inch board (ESP32-2432S028): screen 14 12 13 15 2 21, touch 25 32 39 33, speaker 26, relays on 22 and 27 (plug CN1)
+#else
+#define CYD 0
+#endif
 
 #define NREL 4
 #define BOOT_PIN 0
@@ -132,7 +137,7 @@ bool goodCode(const String& c){                                 // letters, numb
 bool buzzIs4(){ return pins[NREL - 1] < 0 && (bzPin >= 0 || spk); }      // no relay on number 4: "switch 4" is the buzzer alarm
 String stateText(){                                             // "s 1:on 2:off 3:- 4:-"   ( - = no relay on that number )
   String s = "s";
-  for(int i = 0; i < NREL; i++){ s += " "; s += String(i + 1); s += ":"; s += (i == NREL - 1 && buzzIs4()) ? (bzAlarm ? "on" : "off") : (pins[i] < 0 ? "-" : (on[i] ? "on" : "off")); }
+  for(int i = 0; i < NREL; i++){ s += " "; s += String(i + 1); s += ":"; s += (i == NREL - 1 && buzzIs4()) ? (bzAlarm ? "on" : "off") : (on[i] ? "on" : "off"); }
   return s;
 }
 String esc(const String& s){                                    // safe to put inside a web page
@@ -142,12 +147,13 @@ String esc(const String& s){                                    // safe to put i
   return o;
 }
 bool goodPin(int p){ return p == -1 || (p >= 1 && p <= 48 && p != 3 && p != 19 && p != 20 && !(p >= 35 && p <= 37) && p != 45 && p != 46); }
-bool goodPinFor(int p, int b){ if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21; return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
+bool goodPinFor(int p, int b){ if(b == 3) return p == -1 || p == 22 || p == 27; if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21; return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
 
 // ------------------------------------------------------------ the relays
 void setRelay(int i, bool v){
-  if(i < 0 || i >= NREL || pins[i] < 0) return;
+  if(i < 0 || i >= NREL) return;
   on[i] = v; pulseEnd[i] = 0;
+  if(pins[i] < 0) return;                                         // no relay on this number yet: the button still works on the screen and in the app
   if(activeLow){ pinMode(pins[i], OUTPUT_OPEN_DRAIN); digitalWrite(pins[i], v ? LOW : HIGH); }      // LOW = relay on.  "off" lets go of the wire, so 5 volt relay boards switch off all the way
   else { pinMode(pins[i], OUTPUT); digitalWrite(pins[i], v ? HIGH : LOW); }
 }
@@ -195,7 +201,7 @@ void doCommand(String m){
     if(n == NREL && buzzIs4()){                                  // "switch 4" = the buzzer alarm
       if(b == "on") setBuzz(true); else if(b == "off") setBuzz(false); else if(b == "toggle") setBuzz(!bzAlarm); else if(b == "pulse") beep(3, 150, 120);
     }
-    else if(n >= 1 && n <= NREL && pins[n - 1] >= 0){
+    else if(n >= 1 && n <= NREL){
       if(b == "on") setRelay(n - 1, true);
       else if(b == "off") setRelay(n - 1, false);
       else if(b == "toggle") setRelay(n - 1, !on[n - 1]);
@@ -410,7 +416,7 @@ SPIClass lcdSpi(HSPI);
 String lcdShown = "";
 uint16_t rgb(uint8_t r, uint8_t g, uint8_t b){ return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)); }
 void lcdCmd(uint8_t c){ digitalWrite(LCD_DC, LOW); lcdSpi.write(c); digitalWrite(LCD_DC, HIGH); }
-void lcdOpen(){ lcdSpi.beginTransaction(SPISettings(20000000, MSBFIRST, board == 2 ? SPI_MODE0 : SPI_MODE3)); digitalWrite(LCD_CS, LOW); }
+void lcdOpen(){ lcdSpi.beginTransaction(SPISettings(20000000, MSBFIRST, board >= 2 ? SPI_MODE0 : SPI_MODE3)); digitalWrite(LCD_CS, LOW); }
 void lcdClose(){ digitalWrite(LCD_CS, HIGH); lcdSpi.endTransaction(); }
 void lcdWindow(int x, int y, int w, int h){
   uint8_t d[4];
@@ -455,13 +461,14 @@ int lcdText(int x, int y, const char* s, uint16_t fg, uint16_t bg, int sc){     
 void lcdInit(){
   static const uint8_t TURN1[4] = {0x60, 0xA0, 0x20, 0xE0}, TURN2[4] = {0x28, 0xE8, 0x68, 0xA8};      // 4 ways to lay the picture sideways (red MaTouch / touch board)
   if(board == 2){ LCD_SCK = 12; LCD_MISO = 13; LCD_MOSI = 11; LCD_CS = 10; LCD_DC = 46; LCD_BL = 45; }
+  if(board == 3){ LCD_SCK = 14; LCD_MISO = 12; LCD_MOSI = 13; LCD_CS = 15; LCD_DC = 2; LCD_BL = 21; }
   pinMode(LCD_CS, OUTPUT); digitalWrite(LCD_CS, HIGH); pinMode(LCD_DC, OUTPUT); digitalWrite(LCD_DC, HIGH);
   lcdSpi.begin(LCD_SCK, LCD_MISO, LCD_MOSI, -1);
   lcdOpen(); lcdCmd(0x01); lcdClose(); delay(150);               // start fresh
   lcdOpen(); lcdCmd(0x11); lcdClose(); delay(120);               // wake up
   lcdOpen();
   lcdCmd(0x3A); lcdSpi.write(0x55);                              // 65 thousand colors
-  lcdCmd(0x36); lcdSpi.write(board == 2 ? TURN2[lcdRot & 3] : TURN1[lcdRot & 3]);      // sideways: 320 wide, 240 tall
+  lcdCmd(0x36); lcdSpi.write(board >= 2 ? TURN2[lcdRot & 3] : TURN1[lcdRot & 3]);      // sideways: 320 wide, 240 tall
   lcdCmd(lcdInv ? 0x21 : 0x20);                                  // this kind of screen needs its colors turned around (the setup page can change it)
   lcdCmd(0x13); lcdCmd(0x29);                                    // picture on
   lcdClose(); delay(20);
@@ -6019,12 +6026,15 @@ static const uint8_t SONG3[] PROGMEM = {62,2,67,4,71,1,67,1,71,4,69,2,67,4,64,2,
 static const uint8_t* const SONGS[4] = {SONG0, SONG1, SONG2, SONG3};
 static const uint16_t SONG_N[4] = {sizeof(SONG0), sizeof(SONG1), sizeof(SONG2), sizeof(SONG3)};
 static const uint16_t SONG_MS[4] = {130, 120, 190, 200};
+volatile int song = 0, songWant = -1;
+static const char* const SONG_NAME[4] = {"JINGLE BELLS", "JOY TO THE WORLD", "SILENT NIGHT", "AMAZING GRACE"};
 void auFill(int16_t* buf, int n){                                // makes the next bit of sound: chimes first, then her voice, songs underneath
-  static uint32_t fxPh = 0, fxInc = 0, muPh = 0, muInc = 0, cpos = 0, cn = 0; static int fxLeft = 0, fxTot = 0, muLeft = 0, muTot = 0, muIdx = 0, song = 0;
+  static uint32_t fxPh = 0, fxInc = 0, muPh = 0, muInc = 0, cpos = 0, cn = 0; static uint32_t muPh2 = 0, muPh3 = 0; static int fxLeft = 0, fxTot = 0, muLeft = 0, muTot = 0, muIdx = 0;
   static const uint8_t* cp = NULL; static bool wasMusic = false;
   if(musicOn && !wasMusic){ muLeft = 0; muIdx = 0; }
   if(!musicOn && wasMusic){ muLeft = 0; song = (song + 1) % 4; }
   wasMusic = musicOn;
+  if(songWant >= 0){ song = songWant % 4; songWant = -1; muLeft = 0; muIdx = 0; }
   for(int i = 0; i < n; i++){
     int s = 0;
     if(fxLeft <= 0 && fxT != fxH){ AuNote q = fxQ[fxT]; fxT = (uint8_t)((fxT + 1) % FXN); fxTot = fxLeft = (int)q.ms * (AU_RATE / 1000); fxInc = q.hz ? (uint32_t)(((uint64_t)q.hz << 32) / AU_RATE) : 0; fxPh = 0; }
@@ -6043,8 +6053,9 @@ void auFill(int16_t* buf, int n){                                // makes the ne
         muTot = muLeft = len * (int)SONG_MS[song] * (AU_RATE / 1000);
         muInc = key ? (uint32_t)((440.0 * pow(2.0, (key - 69) / 12.0)) * 4294967296.0 / AU_RATE) : 0; muPh = 0;
       }
-      if(muInc){ int e = 60, pos = muTot - muLeft; if(pos < 80) e = e * pos / 80; if(muLeft < 640) e = e * muLeft / 640;
-        s += (SINE[muPh >> 24] * e) + (SINE[(muPh >> 23) & 255] * e) / 3; muPh += muInc; }
+      if(muInc){ int pos = muTot - muLeft, e = 62 - (int)((long)pos * 34 / (muTot > 0 ? muTot : 1)); if(pos < 60) e = e * pos / 60; if(muLeft < 800) e = e * muLeft / 800;      // rings like a bell: strong, then fading
+        s += (SINE[muPh >> 24] * e) + (SINE[(muPh >> 23) & 255] * e) / 3 + (SINE[muPh3 >> 24] * e) / 2 + (SINE[muPh2 >> 24] * 30);      // the note, its octave, a second voice a hair apart, and a soft low voice under it
+        muPh += muInc; muPh3 += muInc + (muInc >> 8); muPh2 += muInc >> 1; }
       muLeft--;
     }
     if(s > 32000) s = 32000; if(s < -32000) s = -32000;
@@ -6058,8 +6069,13 @@ void auTask(void* arg){                                          // runs by itse
   for(;;){
     bool act = auActive();
     auFill(buf, 256);
-    if(act){ quiet = 0; if(!amp){ digitalWrite(1, LOW); amp = true; } }                 // pin 1 LOW = amplifier on
-    else if(amp && ++quiet > 12){ digitalWrite(1, HIGH); amp = false; }                  // quiet for a moment: amplifier off, no hiss
+    if(board == 2){
+      if(act){ quiet = 0; if(!amp){ digitalWrite(1, LOW); amp = true; } }               // pin 1 LOW = amplifier on
+      else if(amp && ++quiet > 12){ digitalWrite(1, HIGH); amp = false; }                // quiet for a moment: amplifier off, no hiss
+    }
+#if CYD
+    { int g = volSet <= 1 ? 1 : (volSet == 2 ? 2 : 4); for(int i = 0; i < 512; i++) buf[i] = (int16_t)((((int)buf[i] * g) >> 2) ^ 0x8000); }      // the yellow board plays through its own pin 26: quieter, and counted from 0 up
+#endif
     size_t w = 0;
     i2s_write(I2S_NUM_0, buf, sizeof(buf), &w, portMAX_DELAY);
   }
@@ -6074,6 +6090,21 @@ int floatScore(int p){                                           // is this wire
 }
 void auInit(){                                                   // start the sound wires, wake the ES8311 chip, find the speaker wire, start the sound task
   for(int i = 0; i < 256; i++) SINE[i] = (int8_t)(127.0 * sin(i * 6.2831853 / 256.0));
+#if CYD
+  {                                                              // yellow board: the chip makes the sound itself on pin 26 (the SPEAK plug)
+    i2s_config_t c3; memset(&c3, 0, sizeof(c3));
+    c3.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_DAC_BUILT_IN);
+    c3.sample_rate = AU_RATE; c3.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT; c3.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+    c3.communication_format = (i2s_comm_format_t)I2S_COMM_FORMAT_STAND_MSB;
+    c3.dma_buf_count = 6; c3.dma_buf_len = 256; c3.use_apll = false; c3.tx_desc_auto_clear = true;
+    if(i2s_driver_install(I2S_NUM_0, &c3, 0, NULL) != ESP_OK) return;
+    i2s_set_dac_mode(I2S_DAC_CHANNEL_LEFT_EN);                   // only pin 26; pin 25 stays with the touch screen
+    spk = true; spkUsed = 26;
+    xTaskCreatePinnedToCore(auTask, "sound", 6144, NULL, 3, NULL, 1);
+    fxNote(523, 110); fxNote(659, 110); fxNote(784, 200);
+    return;
+  }
+#endif
   pinMode(1, OUTPUT); digitalWrite(1, HIGH);
   i2s_config_t cfg; memset(&cfg, 0, sizeof(cfg));
   cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
@@ -6173,23 +6204,23 @@ void cvSprite(int x, int y, const uint16_t* p){                    // a 36 x 36 
 bool nameHas(int i, const char* w){ return nm[i].indexOf(w) >= 0; }
 bool isDoor(int i){ return i < NREL && (nameHas(i, "GARAGE") || nameHas(i, "DOOR") || nameHas(i, "GATE")) && !nameHas(i, "LIGHT"); }      // a door gets one short press
 bool tileBuzz(int i){ return i == NREL - 1 && buzzIs4(); }
-bool tileUsed(int id){ return id >= NREL || tileBuzz(id) || pins[id] >= 0; }
+bool tileUsed(int id){ return true; }
 bool tileOn(int id){ return id == 4 ? (bool)musicOn : (id < NREL ? (tileBuzz(id) ? bzAlarm : on[id]) : false); }
 void drawTile(int slot){
   int id = pgNo * 6 + slot, x = 5 + (slot % 3) * 105, y = 33 + (slot / 3) * 85;
   if(y + 84 <= cvY0 || y >= cvY0 + cvHh) return;
   bool used = tileUsed(id), isOn = tileOn(id), door = id < NREL && isDoor(id);
   uint16_t tint = !used ? rgb(70, 78, 92) : isOn ? rgb(255, 196, 40) : door ? rgb(40, 120, 240) : id == 4 ? rgb(150, 70, 220) : id == 6 ? rgb(20, 170, 150) : id == 7 ? rgb(50, 50, 130)
-                : (id == 8 || id == 9) ? rgb(80, 90, 110) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11) ? rgb(60, 100, 170) : rgb(14, 34, 84);
+                : id == 8 ? rgb(205, 60, 60) : id == 9 ? rgb(150, 70, 220) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11) ? rgb(60, 100, 170) : rgb(14, 34, 84);
   cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);              // the dark slab underneath: the button stands up off the picture
   cvGlass(x, y, 100, 77, 14, tint, isOn ? 195 : 165, 0);
-  const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_CAM : id == 9 ? IC_AI : id == 10 ? IC_LOUD : id == 11 ? IC_BACK
+  const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_BACK
                      : tileBuzz(id) ? IC_BELL : door ? IC_GARAGE : (nameHas(id, "LIGHT") || nameHas(id, "LAMP")) ? IC_LIGHT : IC_PLUG;
   cvSprite(x + 7, y + 6, ic);
-  String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : (id == 8 || id == 9) ? String("SOON") : id == 10 ? String(volSet) : id == 11 ? String("<<")
+  String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String("<<")
             : !used ? String("--") : door ? String("TAP") : isOn ? String("ON") : String("OFF");
   cvText(x + 100 - 7 - (int)st.length() * FW, y + 10, st.c_str(), 0xFFFF, 1);
-  String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("CAMERA") : id == 9 ? String("AI") : id == 10 ? String("LOUD") : id == 11 ? String("BACK") : nm[id];
+  String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("BACK") : nm[id];
   if(name.length() > 8) name = name.substring(0, 8);
   cvText(x + (100 - (int)name.length() * FW) / 2, y + 47, name.c_str(), 0xFFFF, 1);
 }
@@ -6200,6 +6231,7 @@ void paintScene(){                                                 // paints wha
   if(gameOn){
     cvText(8, 3, "TIC TAC TOE", rgb(255, 220, 90), 1);
     cvText(LCD_W - 8 - 4 * FW, 3, "EXIT", rgb(255, 150, 150), 1);
+    cvGlass(260, 151, 57, 49, 10, 0x0000, 140, 1); cvGlass(258, 146, 57, 49, 10, rgb(225, 50, 60), 205, 0); cvText(263, 158, "EXIT", 0xFFFF, 1);      // a big EXIT button
     cvText(10, 60, "YOU", 0xFFFF, 1); cvText(16, 88, "X", rgb(255, 210, 60), 2);
     cvText(272, 60, "BOX", 0xFFFF, 1); cvText(278, 88, "O", rgb(255, 120, 140), 2);
     for(int i = 0; i < 9; i++){
@@ -6271,11 +6303,10 @@ void tileTap(int slot){                                            // a finger o
   if(id == 11){ pgNo = 0; return; }
   if(id == 6){ gameStart(true); return; }
   if(id == 7){ lcdSleep(true); return; }
-  if(id == 8){ fxNote(300, 160); showMsg("CAMERA COMES NEXT"); return; }
-  if(id == 9){ fxNote(300, 160); showMsg("AI COMES NEXT"); return; }
-  if(id == 10){ volSet = volSet % 3 + 1; if(spk) esVol(); prefs.putInt("vo", volSet); fxNote(784, 200); sayClip(9); showMsg(String("LOUD ") + String(volSet)); return; }
+  if(id == 8){ for(int i = 0; i < NREL; i++) setRelay(i, false); if(bzAlarm) setBuzz(false); musicOn = false; fxNote(600, 90); fxNote(400, 170); sayClip(13); showMsg("ALL OFF"); reportTag = ""; needReport = true; return; }
+  if(id == 9){ int k = (song + 1) % 4; songWant = k; musicOn = true; showMsg(SONG_NAME[k]); return; }
+  if(id == 10){ volSet = volSet % 3 + 1; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); fxNote(784, 200); sayClip(9); showMsg(String("LOUD ") + String(volSet)); return; }
   if(tileBuzz(id)){ setBuzz(!bzAlarm); if(!bzAlarm) sayClip(6); showMsg(bzAlarm ? "BUZZER ON" : "BUZZER OFF"); }
-  else if(pins[id] < 0){ fxNote(220, 220); sayClip(10); showMsg(String("RELAY ") + String(id + 1) + " NOT WIRED YET"); return; }
   else if(isDoor(id)){ setRelay(id, true); pulseEnd[id] = millis() + 700; if(!pulseEnd[id]) pulseEnd[id] = 1; if(spk) announce(id, true); else beep(1, 90, 110); }
   else { setRelay(id, !on[id]); if(spk) announce(id, false); else if(bzClick) beep(on[id] ? 1 : 2, 90, 110); }
   reportTag = ""; needReport = true;                               // tell the phone app too
@@ -6296,18 +6327,41 @@ bool tpRead(int &x, int &y){
   y = (r == 0 || r == 3) ? tx : 239 - tx;
   return true;
 }
+// yellow board: XPT2046 touch chip (the kind you press) on pins 25 (clock) 32 (out) 39 (in) 33 (pick)
+int xpt(uint8_t cmd){
+  int v = 0;
+  for(int b = 7; b >= 0; b--){ digitalWrite(32, (cmd >> b) & 1); digitalWrite(25, HIGH); digitalWrite(25, LOW); }
+  for(int b = 0; b < 16; b++){ digitalWrite(25, HIGH); v = (v << 1) | (digitalRead(39) ? 1 : 0); digitalWrite(25, LOW); }
+  return (v >> 3) & 0xFFF;
+}
+void tpInit3(){ pinMode(33, OUTPUT); digitalWrite(33, HIGH); pinMode(25, OUTPUT); digitalWrite(25, LOW); pinMode(32, OUTPUT); pinMode(39, INPUT); pinMode(36, INPUT); tpOk = true; }
+bool tpRead3(int &x, int &y){
+  digitalWrite(33, LOW);
+  int z1 = xpt(0xB1), z2 = xpt(0xC1), z = z1 + 4095 - z2;
+  if(z < 450){ xpt(0xD0); digitalWrite(33, HIGH); return false; }      // not pressed hard enough
+  long a = 0, b = 0; xpt(0x91);
+  for(int k = 0; k < 4; k++){ a += xpt(0x91); b += xpt(0xD1); }
+  xpt(0xD0); digitalWrite(33, HIGH);
+  int sx = (int)((a / 4 - 200) * 320 / 3500), sy = (int)((b / 4 - 240) * 240 / 3560);
+  if(sx < 0) sx = 0; if(sx > 319) sx = 319; if(sy < 0) sy = 0; if(sy > 239) sy = 239;
+  int r = (lcdRot + tpFlip) & 3;
+  x = (r == 0 || r == 3) ? sx : 319 - sx;
+  y = (r == 0 || r == 2) ? sy : 239 - sy;
+  return true;
+}
 void tpLoop(){
   if(!tpOk || !lcdOn) return;
   unsigned long now = millis();
   if(now - tpSeen < 30) return;
   tpSeen = now;
-  int x = 0, y = 0; bool down = tpRead(x, y);
+  int x = 0, y = 0; bool down = board == 3 ? tpRead3(x, y) : tpRead(x, y);
+  if(board == 3){ static int n3 = 0; if(down){ if(++n3 < 2) down = false; } else n3 = 0; }      // a pressed screen must hold for two looks: no ghost taps
   if(down && !tpDown && now - tpAt > (gameOn ? 160UL : 280UL)){
     tpAt = now;
     if(asleep){ lcdSleep(false); tpDown = true; return; }         // the first touch only wakes the screen
     lastTouch = now;
     if(gameOn){
-      if(x > 250 && y < 34){ gameOn = false; fxNote(600, 60); }
+      if((x > 215 && y < 40) || (x >= 256 && y >= 140 && y < 204)){ gameOn = false; fxNote(600, 60); }
       else if(gWin) gameStart(false);
       else if(x >= 67 && x < 256 && y >= 34 && y < 202) gTap((x - 67) / 63 + ((y - 34) / 56) * 3);
     }
@@ -6343,7 +6397,7 @@ String page(const String& note){
   h += "<div class=card><b>2. Secret code from Amy</b><br><small>In Amy: 3 dots &gt; Remote switches &gt; Copy code. Then hold your finger here and tap Paste.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<div class=card><b>3. Relay pins</b> <small>(-1 = not used)</small><br>";
   for(int i = 0; i < NREL; i++) h += "<input class=pin type=number name=p" + String(i + 1) + " value=" + String(pins[i]) + ">";
-  h += String("<small>") + (board == 2 ? "On the 2.8 inch touch board use only 2, 14 or 21 (the small plug marked IO2 IO3 IO14 IO21)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
+  h += String("<small>") + (board == 3 ? "On the yellow board use only 22 or 27 (the small plug marked CN1)." : board == 2 ? "On the 2.8 inch touch board use only 2, 14 or 21 (the small plug marked IO2 IO3 IO14 IO21)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
   h += activeLow ? " selected" : "";
   h += ">Relay board clicks ON when the pin goes LOW (most blue relay boards)</option><option value=0";
   h += activeLow ? "" : " selected";
@@ -6374,7 +6428,7 @@ String page(const String& note){
   h += board == 2 ? " selected" : "";
   h += ">2.8 inch touch screen board (plug says IO2 IO3 IO14 IO21)</option><option value=1";
   h += board == 1 ? " selected" : "";
-  h += ">Red MaTouch with the 2.8 inch screen</option></select>";
+  h += ">Red MaTouch with the 2.8 inch screen</option>"; if(CYD) h += "<option value=3 selected>Yellow 2.8 inch touch board</option>"; h += "</select>";
   h += "<small>Picture upside down or backwards? Pick the next screen turn. Colors look like a film negative? Change the colors. A tap hits the wrong square? Pick the next touch.</small><select name=lr>";
   for(int i = 0; i < 4; i++){ h += "<option value=" + String(i) + (lcdRot == i ? " selected" : "") + ">Screen turn " + String(i + 1) + "</option>"; }
   h += "</select><select name=li><option value=1";
@@ -6387,7 +6441,7 @@ String page(const String& note){
   h += "<button>Save and restart</button></form><div class=card><b>Test</b> <small>(you should hear a click or a beep)</small>";
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
-  h += "</div><small>AmyRelay 4.1 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>AmyRelay 4.2 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6396,17 +6450,17 @@ void handleSave(){
   String c = web.arg("code"); c.trim();
   if(!s.length()){ web.send(200, "text/html", page("Pick your Wi-Fi first.")); return; }
   if(!goodCode(c)){ web.send(200, "text/html", page("The secret code is missing or not right. Copy it in Amy and paste it here.")); return; }
-  int nb = web.arg("bd").toInt(); if(nb < 0 || nb > 2) nb = 0;
+  int nb = web.arg("bd").toInt(); if(nb < 0 || nb > 2) nb = 0; if(CYD) nb = 3;
   bool swap = nb != board;                                       // a different board was picked: start from that board's own pins
   int np[NREL];
   for(int i = 0; i < NREL; i++){
     np[i] = web.hasArg("p" + String(i + 1)) && web.arg("p" + String(i + 1)).length() ? web.arg("p" + String(i + 1)).toInt() : -1;
-    if(swap) np[i] = (i == 0 ? (nb == 2 ? 2 : 5) : -1);
+    if(swap) np[i] = (i == 0 ? (nb == 2 ? 2 : nb == 3 ? 22 : 5) : -1);
     if(!goodPinFor(np[i], nb)){ web.send(200, "text/html", page("Pin " + String(np[i]) + " cannot be used for a relay on this board.")); return; }
     for(int j = 0; j < i; j++) if(np[i] >= 0 && np[i] == np[j]){ web.send(200, "text/html", page("Two relays cannot share pin " + String(np[i]) + ".")); return; }
   }
   int nz = web.hasArg("bz") && web.arg("bz").length() ? web.arg("bz").toInt() : bzPin;
-  if(swap) nz = nb == 2 ? -1 : 4;
+  if(swap) nz = nb >= 2 ? -1 : 4;
   if(!goodPinFor(nz, nb)){ web.send(200, "text/html", page("Pin " + String(nz) + " cannot be used for the buzzer on this board.")); return; }
   for(int i = 0; i < NREL; i++) if(nz >= 0 && nz == np[i]){ web.send(200, "text/html", page("The buzzer cannot share pin " + String(nz) + " with a relay.")); return; }
   prefs.putString("ssid", s); prefs.putString("pass", web.arg("pass")); prefs.putString("code", c);
@@ -6442,7 +6496,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 4.1 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("AmyRelay 4.2 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
@@ -6452,9 +6506,10 @@ void setup(){
   volSet = prefs.getInt("vo", 2); if(volSet < 1 || volSet > 3) volSet = 2;
   spkPin = prefs.getInt("sd", 0); if(spkPin != 6 && spkPin != 8) spkPin = 0;
   board = prefs.getInt("bd", 0); if(board < 0 || board > 2) board = 0;
-  lcdRot = prefs.getInt("lr", 0) & 3; tpFlip = prefs.getInt("tf", 0) & 3; lcdInv = prefs.getBool("li", true); tpOk = false;
+  if(CYD){ board = 3; if(!prefs.isKey("p1")){ pins[0] = 22; pins[1] = 27; pins[2] = -1; pins[3] = -1; } if(!prefs.isKey("bd")) prefs.putInt("bd", 3); }
+  lcdRot = prefs.getInt("lr", 0) & 3; tpFlip = prefs.getInt("tf", 0) & 3; lcdInv = prefs.getBool("li", !CYD); tpOk = false;
   bool busy16 = false; for(int i = 0; i < NREL; i++) if(pins[i] == 15 || pins[i] == 16 || pins[i] == 18) busy16 = true;
-  if(!prefs.isKey("bd") && !busy16){                             // first start: is this the 2.8 inch touch board? Its touch chip answers on pins 16 and 15.
+  if(!CYD && !prefs.isKey("bd") && !busy16){                             // first start: is this the 2.8 inch touch board? Its touch chip answers on pins 16 and 15.
     tpInit();
     if(tpOk){
       board = 2; prefs.putInt("bd", 2);
@@ -6463,13 +6518,14 @@ void setup(){
       Serial.println("Found the 2.8 inch touch screen board.");
     } else Wire.end();
   }
-  bzPin = prefs.getInt("bz", board == 2 ? -1 : 4); bzFlip = prefs.getBool("bf", false); bzClick = prefs.getBool("bc", true);
+  bzPin = prefs.getInt("bz", board >= 2 ? -1 : 4); bzFlip = prefs.getBool("bf", false); bzClick = prefs.getBool("bc", true);
   if(!goodPinFor(bzPin, board)) bzPin = -1;
   for(int i = 0; i < NREL; i++){ if(!goodPinFor(pins[i], board)) pins[i] = -1; if(pins[i] >= 0 && pins[i] == bzPin) bzPin = -1; }
   for(int i = 0; i < NREL; i++) setRelay(i, false);              // everything OFF at power-up
   bzIdle(); beep(1, 120, 60);                                    // one beep: the box has power
   if(board == 1){ pinMode(47, OUTPUT); digitalWrite(47, HIGH); }             // red MaTouch: pin 47 is the memory card - keep the card quiet
   if(board == 2){ pinMode(1, OUTPUT); digitalWrite(1, HIGH); if(!tpOk) tpInit(); auInit(); }      // touch board: pin 1 high = speaker amplifier off (no hiss)
+  if(board == 3){ pinMode(4, OUTPUT); digitalWrite(4, HIGH); pinMode(16, OUTPUT); digitalWrite(16, HIGH); pinMode(17, OUTPUT); digitalWrite(17, HIGH); auInit(); tpInit3(); }      // yellow board: its little color light off, sound, touch
   if(board){ lcdInit(); lcdDraw(true); }
   WiFi.persistent(false);
   web.on("/", HTTP_GET, handleRoot);
