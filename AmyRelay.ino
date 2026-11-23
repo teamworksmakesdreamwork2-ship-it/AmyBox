@@ -6333,6 +6333,7 @@ int tpZ = 0, tpLX = -1, tpLY = -1;                           // last press stren
 int xpt(uint8_t cmd){
   int v = 0;
   for(int b = 7; b >= 0; b--){ digitalWrite(32, (cmd >> b) & 1); delayMicroseconds(2); digitalWrite(25, HIGH); delayMicroseconds(3); digitalWrite(25, LOW); delayMicroseconds(2); }      // slow, steady clock: this chip cannot follow a fast one
+  digitalWrite(32, LOW);                                          // the out wire must rest LOW while we listen, or the chip thinks a new order is starting
   for(int b = 0; b < 16; b++){ digitalWrite(25, HIGH); delayMicroseconds(3); v = (v << 1) | (digitalRead(39) ? 1 : 0); digitalWrite(25, LOW); delayMicroseconds(3); }
   return (v >> 3) & 0xFFF;
 }
@@ -6450,7 +6451,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + "</small>";
-  h += "</div><small>AmyRelay 4.3 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>AmyRelay 4.4 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6505,7 +6506,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 4.3 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("AmyRelay 4.4 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
