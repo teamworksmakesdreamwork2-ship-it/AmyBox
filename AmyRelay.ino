@@ -148,7 +148,7 @@ String esc(const String& s){                                    // safe to put i
   return o;
 }
 bool goodPin(int p){ return p == -1 || (p >= 1 && p <= 48 && p != 3 && p != 19 && p != 20 && !(p >= 35 && p <= 37) && p != 45 && p != 46); }
-bool goodPinFor(int p, int b){ if(b == 3) return p == -1 || p == 22 || p == 27; if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21; return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
+bool goodPinFor(int p, int b){ if(b == 4) return p == -1 || p == 4 || p == 5 || p == 13 || p == 14 || (p >= 16 && p <= 19) || p == 23 || (p >= 25 && p <= 27) || p == 32 || p == 33; if(b == 3) return p == -1 || p == 22 || p == 27; if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21; return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
 
 // ------------------------------------------------------------ the relays
 void setRelay(int i, bool v){
@@ -6380,6 +6380,57 @@ void tpLoop(){
   tpDown = down;
 }
 
+// ------------------------------------------------------------ the SMALL board (ideaspark ESP32 with the tiny 0.96 inch screen, SSD1306 on pins 21 and 22)
+bool oledOn = false, oledBlank = false; uint8_t OB[1024]; String oledShown = "", oledState = ""; unsigned long oledWake = 0;
+void oCmd(uint8_t c){ Wire.beginTransmission(0x3C); Wire.write((uint8_t)0x00); Wire.write(c); Wire.endTransmission(); }
+void oInit(){
+  static const uint8_t I[] = {0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0x8D, 0x14, 0x20, 0x00, 0xDA, 0x12, 0x81, 0xCF, 0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6};
+  for(unsigned int i = 0; i < sizeof(I); i++) oCmd(I[i]);
+  oCmd((lcdRot & 1) ? 0xA0 : 0xA1); oCmd((lcdRot & 1) ? 0xC0 : 0xC8);      // "Screen turn" on the setup page flips it upside down
+  oCmd(0xAF); oledOn = true; oledWake = millis();
+}
+void oPx(int x, int y, bool v){ if(x < 0 || x > 127 || y < 0 || y > 63) return; if(v) OB[x + (y >> 3) * 128] |= (uint8_t)(1 << (y & 7)); else OB[x + (y >> 3) * 128] &= (uint8_t)~(1 << (y & 7)); }
+void oText(int x, int y, const char* t, bool inv){                 // small letters: the big letters at half size (6 wide, 12 tall)
+  for(; *t; t++, x += 6){
+    int ch = (uint8_t)*t; if(ch < 32 || ch > 126) ch = '?';
+    const uint8_t* g = FONT + (ch - 32) * FH * FB;
+    for(int r = 0; r < 12; r++) for(int c = 0; c < 6; c++){
+      int n = 0;
+      for(int dr = 0; dr < 2; dr++) for(int dc = 0; dc < 2; dc++){ int rr = r * 2 + dr, cc = c * 2 + dc; if(pgm_read_byte(g + rr * FB + (cc >> 3)) & (0x80 >> (cc & 7))) n++; }
+      bool b = n >= 2;
+      oPx(x + c, y + r, b != inv);
+    }
+  }
+}
+void oFlush(){
+  oCmd(0x21); oCmd(0); oCmd(127); oCmd(0x22); oCmd(0); oCmd(7);
+  for(int i = 0; i < 1024; i += 16){ Wire.beginTransmission(0x3C); Wire.write((uint8_t)0x40); for(int k = 0; k < 16; k++) Wire.write(OB[i + k]); Wire.endTransmission(); }
+}
+void oledDraw(){
+  if(!oledOn) return;
+  String net = apUp ? String("JOIN ") + AP_NAME : (WiFi.status() != WL_CONNECTED ? String("LOOKING FOR WI-FI") : ((subOk && httpCode == 200) ? String("READY ") + WiFi.localIP().toString() : String("WI-FI OK")));
+  String st = stateText() + "|" + net; for(int i = 0; i < NREL; i++) st += pulseEnd[i] ? "p" : "-";
+  if(st != oledState){ oledState = st; oledWake = millis(); if(oledBlank){ oledBlank = false; oCmd(0xAF); } }
+  if(!oledBlank && millis() - oledWake > 600000UL){ oledBlank = true; oCmd(0xAE); return; }      // 10 quiet minutes: screen off, so it does not wear out. Any change wakes it.
+  if(oledBlank) return;
+  bool alt = ((millis() / 4000) & 1) && !apUp;
+  String key = st + (alt ? "a" : "b");
+  if(key == oledShown) return;
+  oledShown = key;
+  memset(OB, 0, sizeof(OB));
+  String top = alt ? String("LET THERE BE LIGHT") : net; if(top.length() > 21) top = top.substring(0, 21);
+  oText((128 - (int)top.length() * 6) / 2, 0, top.c_str(), false);
+  for(int x = 0; x < 128; x++) oPx(x, 13, true);
+  for(int i = 0; i < NREL; i++){
+    int y = 16 + i * 12; bool door = isDoor(i), isOn = (i == NREL - 1 && buzzIs4()) ? bzAlarm : on[i];
+    oText(2, y, nm[i].c_str(), false);
+    const char* v = door ? (pulseEnd[i] ? "GO" : "DOOR") : (isOn ? "ON" : "OFF"); bool lit = door ? (pulseEnd[i] != 0) : isOn;
+    int vx = 128 - (int)strlen(v) * 6 - 1; oText(vx, y, v, false);
+    if(lit) for(int yy = 2; yy < 10; yy++) for(int xx = 0; xx < 8; xx++) oPx(vx - 12 + xx, y + yy, true);      // a solid square beside ON: easy to see from across the room
+  }
+  oFlush();
+}
+
 // ------------------------------------------------------------ the setup page
 String cleanName(String s, int i){                              // big letters, numbers and spaces only, 8 at most
   static const char* DEF[NREL] = {"LIGHT", "GARAGE", "SWITCH 3", "BUZZER"};
@@ -6406,7 +6457,7 @@ String page(const String& note){
   h += "<div class=card><b>2. Secret code from Amy</b><br><small>In Amy: 3 dots &gt; Remote switches &gt; Copy code. Then hold your finger here and tap Paste.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<div class=card><b>3. Relay pins</b> <small>(-1 = not used)</small><br>";
   for(int i = 0; i < NREL; i++) h += "<input class=pin type=number name=p" + String(i + 1) + " value=" + String(pins[i]) + ">";
-  h += String("<small>") + (board == 3 ? "On the yellow board use only 22 or 27 (the small plug marked CN1)." : board == 2 ? "On the 2.8 inch touch board use only 2, 14 or 21 (the small plug marked IO2 IO3 IO14 IO21)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
+  h += String("<small>") + (board == 4 ? "On the small board use 26, 27, 25, 32, 33, 18, 19 or 23 (21 and 22 run the tiny screen). A short press on its BOOT button flips switch 1." : board == 3 ? "On the yellow board use only 22 or 27 (the small plug marked CN1)." : board == 2 ? "On the 2.8 inch touch board use only 2, 14 or 21 (the small plug marked IO2 IO3 IO14 IO21)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
   h += activeLow ? " selected" : "";
   h += ">Relay board clicks ON when the pin goes LOW (most blue relay boards)</option><option value=0";
   h += activeLow ? "" : " selected";
@@ -6437,7 +6488,7 @@ String page(const String& note){
   h += board == 2 ? " selected" : "";
   h += ">2.8 inch touch screen board (plug says IO2 IO3 IO14 IO21)</option><option value=1";
   h += board == 1 ? " selected" : "";
-  h += ">Red MaTouch with the 2.8 inch screen</option>"; if(CYD) h += "<option value=3 selected>Yellow 2.8 inch touch board</option>"; h += "</select>";
+  h += ">Red MaTouch with the 2.8 inch screen</option>"; if(CYD) h += board == 4 ? "<option value=4 selected>Small board with the tiny screen</option>" : "<option value=3 selected>Yellow 2.8 inch touch board</option>"; h += "</select>";
   h += "<small>Picture upside down or backwards? Pick the next screen turn. Colors look like a film negative? Change the colors. A tap hits the wrong square? Pick the next touch.</small><select name=lr>";
   for(int i = 0; i < 4; i++){ h += "<option value=" + String(i) + (lcdRot == i ? " selected" : "") + ">Screen turn " + String(i + 1) + "</option>"; }
   h += "</select><select name=li><option value=1";
@@ -6451,7 +6502,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + "</small>";
-  h += "</div><small>AmyRelay 4.4 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>AmyRelay 4.5 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6460,7 +6511,7 @@ void handleSave(){
   String c = web.arg("code"); c.trim();
   if(!s.length()){ web.send(200, "text/html", page("Pick your Wi-Fi first.")); return; }
   if(!goodCode(c)){ web.send(200, "text/html", page("The secret code is missing or not right. Copy it in Amy and paste it here.")); return; }
-  int nb = web.arg("bd").toInt(); if(nb < 0 || nb > 2) nb = 0; if(CYD) nb = 3;
+  int nb = web.arg("bd").toInt(); if(nb < 0 || nb > 2) nb = 0; if(CYD) nb = board;
   bool swap = nb != board;                                       // a different board was picked: start from that board's own pins
   int np[NREL];
   for(int i = 0; i < NREL; i++){
@@ -6506,7 +6557,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 4.4 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("AmyRelay 4.5 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
@@ -6516,7 +6567,15 @@ void setup(){
   volSet = prefs.getInt("vo", 2); if(volSet < 1 || volSet > 3) volSet = 2;
   spkPin = prefs.getInt("sd", 0); if(spkPin != 6 && spkPin != 8) spkPin = 0;
   board = prefs.getInt("bd", 0); if(board < 0 || board > 2) board = 0;
-  if(CYD){ board = 3; if(!prefs.isKey("p1")){ pins[0] = 22; pins[1] = 27; pins[2] = -1; pins[3] = -1; } if(!prefs.isKey("bd")) prefs.putInt("bd", 3); }
+  if(CYD){
+    board = 3;
+    pinMode(21, INPUT_PULLDOWN); pinMode(22, INPUT_PULLDOWN); delay(3);      // the small board's tiny screen holds both of these wires up; the yellow board does not
+    if(digitalRead(21) == HIGH && digitalRead(22) == HIGH){ Wire.begin(21, 22); Wire.beginTransmission(0x3C); if(Wire.endTransmission() == 0) board = 4; else { Wire.end(); pinMode(21, INPUT); pinMode(22, INPUT); } }
+    else { pinMode(21, INPUT); pinMode(22, INPUT); }
+    if(!prefs.isKey("p1")){ pins[0] = board == 4 ? 26 : 22; pins[1] = 27; pins[2] = -1; pins[3] = -1; }
+    if(prefs.getInt("bd", -1) != board) prefs.putInt("bd", board);
+    if(board == 4) Serial.println("Found the small board with the tiny screen.");
+  }
   lcdRot = prefs.getInt("lr", 0) & 3; tpFlip = prefs.getInt("tf", 0) & 3; lcdInv = prefs.getBool("li", !CYD); tpOk = false;
   bool busy16 = false; for(int i = 0; i < NREL; i++) if(pins[i] == 15 || pins[i] == 16 || pins[i] == 18) busy16 = true;
   if(!CYD && !prefs.isKey("bd") && !busy16){                             // first start: is this the 2.8 inch touch board? Its touch chip answers on pins 16 and 15.
@@ -6536,7 +6595,8 @@ void setup(){
   if(board == 1){ pinMode(47, OUTPUT); digitalWrite(47, HIGH); }             // red MaTouch: pin 47 is the memory card - keep the card quiet
   if(board == 2){ pinMode(1, OUTPUT); digitalWrite(1, HIGH); if(!tpOk) tpInit(); auInit(); }      // touch board: pin 1 high = speaker amplifier off (no hiss)
   if(board == 3){ pinMode(4, OUTPUT); digitalWrite(4, HIGH); pinMode(16, OUTPUT); digitalWrite(16, HIGH); pinMode(17, OUTPUT); digitalWrite(17, HIGH); auInit(); tpInit3(); }      // yellow board: its little color light off, sound, touch
-  if(board){ lcdInit(); lcdDraw(true); }
+  if(board == 4){ oInit(); oledDraw(); }
+  if(board && board != 4){ lcdInit(); lcdDraw(true); }
   WiFi.persistent(false);
   web.on("/", HTTP_GET, handleRoot);
   web.on("/save", HTTP_POST, handleSave);
@@ -6562,6 +6622,10 @@ void loop(){
   if(digitalRead(BOOT_PIN) == LOW){                              // BOOT held 6 seconds: erase the setup
     if(!bootHeld) bootHeld = millis();
     else if(millis() - bootHeld > 6000){ Serial.println("Erasing the setup."); setBuzz(false); for(int i = 0; i < NREL; i++) setRelay(i, false); prefs.clear(); delay(300); ESP.restart(); }
-  } else bootHeld = 0;
+  } else {
+    if(board == 4 && bootHeld && millis() - bootHeld > 40 && millis() - bootHeld < 1500) doCommand(isDoor(0) ? "1 pulse" : "1 toggle");      // small board: a short press on its BOOT button flips switch 1
+    bootHeld = 0;
+  }
+  if(oledOn && millis() - lcdAt > 250UL){ lcdAt = millis(); oledDraw(); }
   delay(5);
 }
