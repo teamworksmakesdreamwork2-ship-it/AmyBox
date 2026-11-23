@@ -1,3 +1,4 @@
+// AMYRELAY_VERSION 4.7   (the build names the files with this number)
 /*  AmyRelay 4  -  a Wi-Fi switch box for the Amy AI phone app.      (c) Moto Takeda 316-304-5398
     Board: ESP32-S3 (a plain ESP32 works too).  Needs only the ESP32 board package - no extra libraries.
 
@@ -6331,7 +6332,11 @@ bool tpRead(int &x, int &y){
 }
 int tpZ = 0, tpLX = -1, tpLY = -1;                           // last press strength and place (shown on the setup page, to check the touch)
 int tpZ1 = 0, tpZ2 = 0, tpRX = 0, tpRY = 0, tpTaps = 0, tpStuck = 0, tpKind = 0;      // raw numbers for the touch test page; kind 1 = press screen (XPT2046), 2 = light-touch (CST820)
-SPIClass tSpi(VSPI);                                             // yellow board: the touch chip gets its own hardware wire set, the screen keeps HSPI
+#if CYD
+SPIClass tSpi(VSPI);                                             // yellow board: the touch chip gets its own hardware wire set
+#else
+SPIClass tSpi(FSPI);                                             // the black S3 box has no VSPI; this one is never used there
+#endif
 uint16_t xpt16(uint8_t cmd){ tSpi.transfer(cmd); uint16_t v = tSpi.transfer16(0); return (v >> 3) & 0xFFF; }
 bool cstFound(){
   Wire.begin(33, 32); Wire.beginTransmission(0x15); bool ok = Wire.endTransmission() == 0;
@@ -6388,7 +6393,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>AmyRelay 4.6. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>AmyRelay 4.7. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 void tpLoop(){
@@ -6535,7 +6540,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>AmyRelay 4.6 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>AmyRelay 4.7 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6590,7 +6595,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 4.6 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("AmyRelay 4.7 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
