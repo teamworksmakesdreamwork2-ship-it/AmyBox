@@ -26,6 +26,7 @@
 #include <math.h>
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CYD_TEST)
 #include <driver/dac.h>
+#include <driver/rtc_io.h>
 #define CYD 1                               // built for the YELLOW 2.8 inch board (ESP32-2432S028): screen 14 12 13 15 2 21, touch 25 32 39 33, speaker 26, relays on 22 and 27 (plug CN1)
 #else
 #define CYD 0
@@ -6329,34 +6330,66 @@ bool tpRead(int &x, int &y){
   return true;
 }
 int tpZ = 0, tpLX = -1, tpLY = -1;                           // last press strength and place (shown on the setup page, to check the touch)
-// yellow board: XPT2046 touch chip (the kind you press) on pins 25 (clock) 32 (out) 39 (in) 33 (pick)
-int xpt(uint8_t cmd){
-  int v = 0;
-  for(int b = 7; b >= 0; b--){ digitalWrite(32, (cmd >> b) & 1); delayMicroseconds(2); digitalWrite(25, HIGH); delayMicroseconds(3); digitalWrite(25, LOW); delayMicroseconds(2); }      // slow, steady clock: this chip cannot follow a fast one
-  digitalWrite(32, LOW);                                          // the out wire must rest LOW while we listen, or the chip thinks a new order is starting
-  for(int b = 0; b < 16; b++){ digitalWrite(25, HIGH); delayMicroseconds(3); v = (v << 1) | (digitalRead(39) ? 1 : 0); digitalWrite(25, LOW); delayMicroseconds(3); }
-  return (v >> 3) & 0xFFF;
+int tpZ1 = 0, tpZ2 = 0, tpRX = 0, tpRY = 0, tpTaps = 0, tpStuck = 0, tpKind = 0;      // raw numbers for the touch test page; kind 1 = press screen (XPT2046), 2 = light-touch (CST820)
+SPIClass tSpi(VSPI);                                             // yellow board: the touch chip gets its own hardware wire set, the screen keeps HSPI
+uint16_t xpt16(uint8_t cmd){ tSpi.transfer(cmd); uint16_t v = tSpi.transfer16(0); return (v >> 3) & 0xFFF; }
+bool cstFound(){
+  Wire.begin(33, 32); Wire.beginTransmission(0x15); bool ok = Wire.endTransmission() == 0;
+  if(!ok){ Wire.end(); }
+  return ok;
 }
 void tpInit3(){
 #if CYD
-  dac_output_disable(DAC_CHANNEL_1);                              // pin 25 belongs to the touch, not to the sound
+  dac_output_disable(DAC_CHANNEL_1); rtc_gpio_deinit(GPIO_NUM_25);      // pin 25 belongs to the touch, never to the sound
 #endif
-  pinMode(33, OUTPUT); digitalWrite(33, HIGH); pinMode(25, OUTPUT); digitalWrite(25, LOW); pinMode(32, OUTPUT); pinMode(39, INPUT); pinMode(36, INPUT); tpOk = true; digitalWrite(33, LOW); xpt(0xD0); digitalWrite(33, HIGH); }
+  pinMode(25, OUTPUT); digitalWrite(25, HIGH); delay(20);
+  if(cstFound()){ tpKind = 2; tpOk = true; Serial.println("Touch: light-touch chip CST820 found."); return; }
+  pinMode(25, INPUT); pinMode(33, OUTPUT); digitalWrite(33, HIGH); pinMode(36, INPUT);
+  tSpi.begin(25, 39, 32, 33);
+  tpKind = 1; tpOk = true;
+  Serial.println("Touch: press-type chip XPT2046 on pins 25, 39, 32, 33.");
+}
 bool tpRead3(int &x, int &y){
-  digitalWrite(33, LOW); delayMicroseconds(5);
-  int z1 = xpt(0xB1), z2 = xpt(0xC1), z = z1 + 4095 - z2;
-  tpZ = z;
-  if(z < 300){ xpt(0xD0); digitalWrite(33, HIGH); return false; }      // not pressed hard enough
-  long a = 0, b = 0; xpt(0x91);
-  for(int k = 0; k < 4; k++){ a += xpt(0x91); b += xpt(0xD1); }
-  xpt(0xD0); digitalWrite(33, HIGH);
-  int sx = (int)((a / 4 - 200) * 320 / 3500), sy = (int)((b / 4 - 240) * 240 / 3560);
+  int sx = 0, sy = 0;
+  if(tpKind == 2){
+    uint8_t d[5] = {0};
+    Wire.beginTransmission(0x15); Wire.write((uint8_t)0x02); if(Wire.endTransmission(false) != 0) return false;
+    if(Wire.requestFrom(0x15, 5) != 5) return false;
+    for(int i = 0; i < 5; i++) d[i] = Wire.read();
+    tpZ = d[0];
+    if(d[0] == 0 || d[0] > 2) return false;
+    tpRX = ((d[1] & 0x0F) << 8) | d[2]; tpRY = ((d[3] & 0x0F) << 8) | d[4];
+    sx = tpRY * 320 / 320; sy = 239 - tpRX * 240 / 240;          // this chip reports in screen pixels, standing up
+  } else {
+    tSpi.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(33, LOW);
+    tpZ1 = xpt16(0xB1); tpZ2 = xpt16(0xC1);
+    int z = tpZ1 + 4095 - tpZ2;
+    xpt16(0x91);                                                  // first reading is thrown away (it is noisy)
+    long a = 0, b = 0; for(int k = 0; k < 3; k++){ a += xpt16(0x91); b += xpt16(0xD1); }
+    tSpi.transfer(0xD0); tSpi.transfer16(0);                      // back to resting
+    digitalWrite(33, HIGH); tSpi.endTransaction();
+    tpZ = z; tpRX = a / 3; tpRY = b / 3;
+    bool stuck = tpZ1 > 4000 && tpZ2 > 4000;                      // every wire reads high: the chip is not answering, that is NOT a press
+    if(stuck) tpStuck++; else tpStuck = 0;
+    if(stuck || z < 400 || z > 3900) return false;
+    sx = (int)((tpRX - 200) * 320L / 3500); sy = (int)((tpRY - 240) * 240L / 3560);
+  }
   if(sx < 0) sx = 0; if(sx > 319) sx = 319; if(sy < 0) sy = 0; if(sy > 239) sy = 239;
   int r = (lcdRot + tpFlip) & 3;
   x = (r == 0 || r == 3) ? sx : 319 - sx;
   y = (r == 0 || r == 2) ? sy : 239 - sy;
   tpLX = x; tpLY = y;
   return true;
+}
+void handleTouch(){                                              // live touch numbers, refreshes itself every second
+  String h = "<!doctype html><meta name=viewport content='width=device-width'><meta http-equiv=refresh content=1><body style='font:20px sans-serif;background:#111;color:#eee;padding:14px'><h3>Touch test</h3>";
+  h += "Chip: " + String(tpKind == 2 ? "light-touch CST820" : tpKind == 1 ? "press-type XPT2046" : "none") + "<br>";
+  h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
+  h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
+  h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
+  h += "<small>AmyRelay 4.6. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  web.send(200, "text/html", h);
 }
 void tpLoop(){
   if(!tpOk || !lcdOn) return;
@@ -6366,7 +6399,7 @@ void tpLoop(){
   int x = 0, y = 0; bool down = board == 3 ? tpRead3(x, y) : tpRead(x, y);
   if(board == 3){ static int n3 = 0; if(down){ if(++n3 < 2) down = false; } else n3 = 0; }      // a pressed screen must hold for two looks: no ghost taps
   if(down && !tpDown && now - tpAt > (gameOn ? 160UL : 280UL)){
-    tpAt = now;
+    tpAt = now; tpTaps++;
     if(asleep){ lcdSleep(false); tpDown = true; return; }         // the first touch only wakes the screen
     lastTouch = now;
     if(gameOn){
@@ -6501,8 +6534,8 @@ String page(const String& note){
   h += "<button>Save and restart</button></form><div class=card><b>Test</b> <small>(you should hear a click or a beep)</small>";
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
-  if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + "</small>";
-  h += "</div><small>AmyRelay 4.5 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
+  h += "</div><small>AmyRelay 4.6 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6557,7 +6590,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 4.5 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("AmyRelay 4.6 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
@@ -6602,6 +6635,7 @@ void setup(){
   web.on("/save", HTTP_POST, handleSave);
   web.on("/t", HTTP_POST, handleTest);
   web.on("/cmd", HTTP_GET, handleCmd);
+  web.on("/touch", HTTP_GET, handleTouch);
   web.onNotFound(handleOther);
   if(ssid.length()) startSTA(); else startAP();
   web.begin();
