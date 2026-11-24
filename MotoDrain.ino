@@ -1,8 +1,12 @@
-// MOTODRAIN_VERSION 1.1   (the build names the file with this number)
+// MOTODRAIN_VERSION 1.2   (the build names the file with this number)
 // Moto Drain Watch - ESP32-S3 N16R8 + OV7670 FIFO camera (22 pins) + 2 water wires + beeper
 // 1.1: friendly water + smiley look, phone alerts anywhere (ntfy) with a picture,
 //      good-morning "pan is dry" picture every day at 9 AM, Wi-Fi list to pick from,
 //      Flip and Fix colors are saved on the board.
+// 1.2: premium new look, code needed to open the page, "New picture" from anywhere
+//      (ntfy button + link), password eye, Forget Wi-Fi, MotoDrain hotspot turns off
+//      once home Wi-Fi works (comes back if Wi-Fi is lost), Wi-Fi list always works.
+//      Christmas + UFO look. Page code and MotoDrain hotspot password: Shocker1
 // (c) Moto Takeda 316-304-5398
 //
 // WIRING (camera pin -> board pin)
@@ -47,13 +51,24 @@ WiFiUDP udp;
 uint8_t *fb = nullptr;
 bool camOK = false, swapBytes = false, flipCam = false;
 String camMsg = "starting";
-String ssid, pass, topic, code = "04170417";
+String ssid, pass, topic, code = "Shocker1";
 uint32_t touchBase = 0, touchNow = 0;
 int sens = 15;
 bool wet = false;
 uint32_t silenceUntil = 0, lastBeep = 0, lastUdp = 0, lastWetAlert = 0;
 int wetCount = 0, dryCount = 0, lastDay = -1;
 bool sendNow = false, joinedMsg = false;
+String snapSince = "1m";
+uint32_t lastPoll = 0, lostSince = 0;
+bool apOn = true;
+
+String snapTopic() { return topic + "-snap"; }
+String snapLink() { return "https://ntfy.sh/" + snapTopic() + "/publish?message=snap"; }
+bool ok() {
+  if (server.arg("k") == code) return true;
+  server.send(403, "text/plain", "Code needed");
+  return false;
+}
 
 // ---------------------------------------------------------------- camera (SCCB)
 bool wr(uint8_t reg, uint8_t val) {
@@ -201,6 +216,7 @@ bool pushPhone(const String &title, const String &msg, const char *tags, const c
   h.addHeader("Tags", tags);
   h.addHeader("Priority", prio);
   h.addHeader("Click", myLink());
+  h.addHeader("Actions", "http, New picture, https://ntfy.sh/" + snapTopic() + ", method=POST, body=snap, clear=true");
   int rc;
   uint8_t *jpg = nullptr;
   size_t len = 0;
@@ -275,84 +291,122 @@ void dailyLoop() {
 
 // ---------------------------------------------------------------- web page
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>Moto Drain Watch</title>
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name=theme-color content="#070b1a"><title>Moto Drain Watch</title>
 <style>
-body{margin:0;font-family:sans-serif;color:#063b5c;background:linear-gradient(#bfe9ff,#e9f8ff 45%,#ffffff);min-height:100vh;overflow-x:hidden}
-.sea{position:fixed;left:0;right:0;bottom:0;height:120px;z-index:-1;opacity:.55}
-.sea svg{position:absolute;bottom:0;width:200%;height:120px;animation:w 9s linear infinite}
-.sea svg+svg{opacity:.6;animation-duration:14s}
+:root{--g1:#2ee59d;--g2:#ff3b5c;--gold:#ffd166;--r1:#ff5f6d;--r2:#ffc371;--card:rgba(255,255,255,.06);--line:rgba(255,255,255,.12);--t:#eaf2ff;--m:#8fa3c7}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--t);min-height:100vh;
+background:radial-gradient(1100px 600px at 85% -10%,#5a1022 0,transparent 60%),radial-gradient(900px 520px at -15% 35%,#0d4a33 0,transparent 55%),#060a14;overflow-x:hidden}
+.sea{position:fixed;left:0;right:0;bottom:0;height:140px;z-index:-1;opacity:.35;pointer-events:none}
+.sea svg{position:absolute;bottom:0;width:200%;height:140px;animation:w 12s linear infinite}.sea svg+svg{animation-duration:18s;opacity:.6}
 @keyframes w{to{transform:translateX(-50%)}}
-.w{max-width:520px;margin:auto;padding:12px 12px 130px}
-h1{font-size:24px;text-align:center;margin:8px 0 2px;color:#0a6fb3}
-.sub{text-align:center;font-size:14px;color:#3c7aa3;margin-bottom:10px}
-.card{background:#ffffffe6;border-radius:22px;padding:14px;margin-bottom:12px;box-shadow:0 6px 20px #6ab7e655}
-#st{text-align:center;padding:16px;border-radius:20px;transition:.4s}
-#face{font-size:84px;line-height:1}
-#word{font-size:26px;font-weight:bold;margin-top:6px}
-.dry{background:linear-gradient(#d9fbe6,#b8f0cf);color:#11643a}
-.wet{background:linear-gradient(#ffe0e0,#ffbcbc);color:#8a1414;animation:f 1s infinite}
-@keyframes f{50%{transform:scale(1.03)}}
-canvas{width:100%;border-radius:16px;background:#cfeaff;display:block}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-button,select{flex:1;min-width:130px;padding:14px;font-size:17px;font-weight:bold;border:0;border-radius:16px;cursor:pointer}
-button{color:#fff;background:linear-gradient(#45b4ff,#1c7fd6);box-shadow:0 4px 0 #135a99}
-button:active{transform:translateY(3px);box-shadow:0 1px 0 #135a99}
-.g{background:linear-gradient(#52d98a,#22a85a);box-shadow:0 4px 0 #17703c}
-.o{background:linear-gradient(#ffb357,#f08a1c);box-shadow:0 4px 0 #a85a0c}
-select,input{width:100%;padding:12px;font-size:17px;border-radius:12px;border:2px solid #9fd3f5;box-sizing:border-box;margin:5px 0;background:#f4fbff;color:#063b5c}
-small{color:#3c7aa3}a{color:#0a6fb3;font-weight:bold}
-.ft{text-align:center;font-size:11px;color:#5d8fb3;margin:10px}
+.w{max-width:540px;margin:auto;padding:18px 16px 150px}
+.top{display:flex;align-items:center;gap:12px;margin:4px 2px 18px}
+.logo{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;font-size:24px;background:linear-gradient(135deg,#1fa86a,#c8102e);box-shadow:0 8px 24px rgba(200,16,46,.45)}
+.top h1{margin:0;font-size:21px;font-weight:700;letter-spacing:.3px;background:linear-gradient(90deg,#fff,var(--gold));-webkit-background-clip:text;color:transparent}.top small{color:var(--m);font-size:13px}
+.live{margin-left:auto;font-size:12px;font-weight:700;padding:6px 10px;border-radius:99px;background:rgba(62,230,196,.12);color:var(--g1);border:1px solid rgba(62,230,196,.35)}
+.live:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--g1);margin-right:6px;animation:p 1.6s infinite}
+@keyframes p{50%{opacity:.25}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:26px;padding:18px;margin-bottom:16px;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 20px 50px rgba(0,0,0,.35)}
+.lbl{font-size:12px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--m);margin:0 0 12px}
+#st{display:flex;align-items:center;gap:18px;padding:18px;border-radius:22px;transition:.5s;background:linear-gradient(135deg,rgba(46,229,157,.2),rgba(255,209,102,.1));border:1px solid rgba(255,209,102,.45)}
+#st.wet{background:linear-gradient(135deg,rgba(255,95,109,.28),rgba(255,195,113,.15));border-color:rgba(255,95,109,.6);animation:al 1.2s infinite}
+@keyframes al{50%{box-shadow:0 0 40px rgba(255,95,109,.45)}}
+.ring{width:96px;height:96px;flex:none;border-radius:50%;display:grid;place-items:center;font-size:56px;background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.25),rgba(255,255,255,.04));border:2px solid rgba(255,255,255,.18);box-shadow:inset 0 0 20px rgba(255,255,255,.08)}
+#word{font-size:24px;font-weight:800;line-height:1.15}#sub{color:var(--m);font-size:14px;margin-top:6px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.full{grid-column:1/-1}
+button{appearance:none;border:0;border-radius:18px;padding:16px 12px;font-size:16px;font-weight:700;color:#fff;cursor:pointer;
+background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.05));border:1px solid var(--line);box-shadow:0 6px 18px rgba(0,0,0,.25),inset 0 1px 0 rgba(255,255,255,.15);transition:transform .12s,box-shadow .2s}
+button:active{transform:scale(.97)}
+.pri{background:linear-gradient(135deg,#ff4d6d,#c8102e);border:0;box-shadow:0 10px 28px rgba(200,16,46,.5),inset 0 1px 0 rgba(255,255,255,.35);color:#fff}
+.grn{background:linear-gradient(135deg,#34d399,#0f8a4c);border:0;box-shadow:0 10px 28px rgba(15,138,76,.45);color:#fff}
+.warm{background:linear-gradient(135deg,var(--r1),var(--r2));border:0;box-shadow:0 10px 28px rgba(255,95,109,.35);color:#2a0710}
+.cam{position:relative;border-radius:20px;overflow:hidden;border:1px solid var(--line);background:#0b1430;aspect-ratio:4/3}
+canvas{width:100%;height:100%;display:block;object-fit:cover}
+.cam .tag{position:absolute;left:12px;top:12px;font-size:12px;font-weight:700;padding:5px 10px;border-radius:99px;background:rgba(0,0,0,.45);backdrop-filter:blur(6px)}
+.info{color:var(--m);font-size:13px;margin-top:12px;line-height:1.5}
+a{color:var(--g1);font-weight:700;word-break:break-all}
+input,select{width:100%;padding:15px;font-size:16px;border-radius:16px;border:1px solid var(--line);background:rgba(0,0,0,.25);color:var(--t);margin:6px 0;outline:none}
+input:focus,select:focus{border-color:var(--g2);box-shadow:0 0 0 3px rgba(47,140,255,.25)}
+select option{color:#000}.pw{position:relative}.pw button{position:absolute;right:6px;top:12px;padding:8px 12px;border-radius:12px;font-size:18px}
+input[type=range]{padding:0;height:6px;accent-color:var(--g1)}
+#snow{position:fixed;inset:0;pointer-events:none;z-index:0}
+.w{position:relative;z-index:1}
+.lights{display:flex;justify-content:space-between;margin:-6px 6px 16px}
+.lights i{width:10px;height:14px;border-radius:50% 50% 45% 45%;display:block;animation:tw 1.4s infinite}
+.lights i:nth-child(4n+1){background:#ff3b5c;box-shadow:0 0 12px #ff3b5c}.lights i:nth-child(4n+2){background:#2ee59d;box-shadow:0 0 12px #2ee59d;animation-delay:.35s}
+.lights i:nth-child(4n+3){background:#ffd166;box-shadow:0 0 12px #ffd166;animation-delay:.7s}.lights i:nth-child(4n){background:#5ab0ff;box-shadow:0 0 12px #5ab0ff;animation-delay:1.05s}
+@keyframes tw{50%{opacity:.25;box-shadow:none}}
+.ufo{position:fixed;top:70px;left:-90px;font-size:38px;z-index:2;pointer-events:none;animation:fly 16s linear infinite}
+.ufo:after{content:"";position:absolute;left:50%;top:38px;width:46px;height:60px;transform:translateX(-50%);background:linear-gradient(rgba(255,240,150,.55),transparent);clip-path:polygon(35% 0,65% 0,100% 100%,0 100%);animation:beam 2s infinite}
+@keyframes fly{0%{transform:translate(0,0)}25%{transform:translate(30vw,14px)}50%{transform:translate(60vw,-6px)}75%{transform:translate(90vw,10px)}100%{transform:translate(120vw,0)}}
+@keyframes beam{50%{opacity:.2}}
+.ft{text-align:center;font-size:11px;color:#5b6f94;margin-top:18px}
+#login{position:fixed;inset:0;z-index:9;display:none;align-items:center;justify-content:center;background:rgba(4,7,18,.85);backdrop-filter:blur(10px)}
+#login .card{width:88%;max-width:380px;text-align:center}
 </style></head><body>
-<div class=sea><svg viewBox="0 0 1200 120" preserveAspectRatio=none><path fill="#4fb3ff" d="M0 60 Q75 20 150 60 T300 60 T450 60 T600 60 T750 60 T900 60 T1050 60 T1200 60 V120 H0Z"/></svg>
-<svg viewBox="0 0 1200 120" preserveAspectRatio=none><path fill="#1c8fe6" d="M0 80 Q75 50 150 80 T300 80 T450 80 T600 80 T750 80 T900 80 T1050 80 T1200 80 V120 H0Z"/></svg></div>
+<div class=sea><svg viewBox="0 0 1200 140" preserveAspectRatio=none><path fill="#2f8cff" d="M0 70 Q75 30 150 70 T300 70 T450 70 T600 70 T750 70 T900 70 T1050 70 T1200 70 V140 H0Z"/></svg>
+<svg viewBox="0 0 1200 140" preserveAspectRatio=none><path fill="#3ee6c4" d="M0 95 Q75 65 150 95 T300 95 T450 95 T600 95 T750 95 T900 95 T1050 95 T1200 95 V140 H0Z"/></svg></div>
+<div id=login><div class=card><div class=logo style="margin:0 auto 12px">&#127873;</div><b>Moto Drain Watch</b><p class=info>Enter your code</p>
+<input id=lk type=password placeholder="Code"><button class="pri" style="width:100%;margin-top:8px" onclick="K=$('lk').value;try{localStorage.k=K}catch(e){};$('login').style.display='none';st();snap()">Unlock</button></div></div>
+<canvas id=snow></canvas><div class=ufo>&#128760;</div>
 <div class=w>
-<h1>&#128167; Moto Drain Watch &#128167;</h1><div class=sub>Keeping your AC drain happy &#128522;</div>
-<div class=card><div id=st class=dry><div id=face>&#128522;</div><div id=word>All dry - all good!</div></div>
-<div class=row><button class=o onclick="go('/silence')">&#128263; Quiet 30 min</button><button onclick="go('/beep')">&#128264; Test beep</button></div>
-<div class=row><button class=g onclick="if(confirm('Is the pan dry right now?'))go('/dry')">&#128077; Pan is dry now</button></div>
-<small id=info></small></div>
-<div class=card><canvas id=cv width=320 height=240></canvas>
-<div class=row><button onclick=snap()>&#128247; Take picture</button><button id=lb onclick=live()>&#127909; Live: OFF</button></div>
-<div class=row><button onclick="go('/flip')">&#128260; Flip</button><button onclick="go('/swap')">&#127752; Fix colors</button></div>
-<div class=row><button class=g onclick="go('/send')">&#128241; Send picture to phones</button></div>
-<small id=cm></small></div>
-<div class=card><b>&#128241; Phone alerts anywhere</b><br><small>Install the free <b>ntfy</b> app, then open this link on each phone (yours and Terry's):</small><br>
-<a id=al href=#></a></div>
-<div class=card><b>&#9881; Setup</b> <small>(code needed)</small>
-<input id=k type=password placeholder="Code">
-<select id=s><option value="">Pick Wi-Fi...</option></select><button onclick=scan()>&#128246; Find Wi-Fi</button>
-<input id=p type=password placeholder="Wi-Fi password">
-<small>Sensitivity: <span id=sv></span>%</small><input id=se type=range min=5 max=60 onchange="go('/sens?v='+this.value)">
-<div class=row><button class=g onclick=save()>&#128190; Save</button></div></div>
+<div class=top><div class=logo>&#127876;</div><div><h1>Moto Drain Watch</h1><small>Merry Christmas! &#127877; AC drain monitor</small></div><span class=live>LIVE</span></div>
+<div class=lights><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+<div class=card><div id=st><div class=ring id=face>&#128522;</div><div><div id=word>All dry</div><div id=sub>Everything looks good</div></div></div>
+<div class=grid><button onclick="go('/beep')">&#128264; Test beep</button><button onclick="go('/silence')">&#128263; Quiet 30 min</button>
+<button class="grn full" onclick="if(confirm('Is the pan dry right now?'))go('/dry')">&#128077; Pan is dry now</button></div>
+<div class=info id=info></div></div>
+<div class=card><p class=lbl>Camera</p><div class=cam><canvas id=cv width=320 height=240></canvas><span class=tag id=ct>Picture</span></div>
+<div class=grid><button class=pri onclick=snap()>&#128247; Take picture</button><button id=lb onclick=live()>&#127909; Live: off</button>
+<button onclick="go('/flip')">&#128260; Flip</button><button onclick="go('/swap')">&#127752; Fix colors</button>
+<button class="full" onclick="go('/send')">&#128241; Send picture to phones</button></div><div class=info id=cm></div></div>
+<div class=card><p class=lbl>From anywhere</p><div class=info style="margin-top:0">1. Install the free <b>ntfy</b> app and subscribe to:<br><a id=al href=#></a><br><br>
+2. New picture from anywhere - open this link (save it to your home screen):<br><a id=sl href=#></a></div></div>
+<div class=card><p class=lbl>Setup</p>
+<select id=s><option value="">Pick Wi-Fi...</option></select><button style="width:100%" onclick=scan()>&#128246; Find Wi-Fi</button>
+<div class=pw><input id=p type=password placeholder="Wi-Fi password"><button onclick="var e=$('p');e.type=e.type=='password'?'text':'password'">&#128065;</button></div>
+<div class=info>Water sensitivity: <b id=sv></b>%</div><input id=se type=range min=5 max=60 onchange="go('/sens?v='+this.value)">
+<div class=grid><button class=grn onclick=save()>&#128190; Save Wi-Fi</button><button class=warm onclick="if(confirm('Forget the Wi-Fi?'))go('/forget')">Forget Wi-Fi</button></div></div>
 <div class=ft>(c) Moto Takeda 316-304-5398</div></div>
 <script>
-var lv=false,busy=false;
+var K='',lv=false,busy=false;try{K=localStorage.k||''}catch(e){}
 function $(i){return document.getElementById(i)}
-function go(u){fetch(u).then(r=>r.text()).then(t=>{if(t)$('info').textContent=t;st();if(u=='/flip'||u=='/swap')snap()})}
-function st(){fetch('/status').then(r=>r.json()).then(j=>{var e=$('st');e.className=j.wet?'wet':'dry';
-$('face').innerHTML=j.wet?'&#128552;':'&#128522;';$('word').textContent=j.wet?'WATER! Please check the drain':'All dry - all good!';
-$('info').textContent='Sensor '+j.now+' / dry '+j.base+'  -  Wi-Fi: '+j.ip+(j.quiet?'  (quiet)':'');
-$('cm').textContent=j.cam;$('sv').textContent=j.sens;$('se').value=j.sens;var a=$('al');a.href=j.alert;a.textContent=j.alert})}
+function A(u){return u+(u.indexOf('?')<0?'?':'&')+'k='+encodeURIComponent(K)}
+function bad(r){if(r.status==403){$('login').style.display='flex';throw 0}return r}
+function go(u){fetch(A(u)).then(bad).then(r=>r.text()).then(t=>{if(t)$('info').textContent=t;st();if(u=='/flip'||u=='/swap')snap()}).catch(()=>{})}
+function st(){fetch(A('/status')).then(bad).then(r=>r.json()).then(j=>{var e=$('st');e.className=j.wet?'wet':'';
+$('face').innerHTML=j.wet?'&#128552;':'&#128522;';$('word').textContent=j.wet?'Water detected':'All dry';
+$('sub').textContent=j.wet?'Please check the AC drain':'Everything looks good';
+$('info').textContent='Wi-Fi: '+j.ip+'  |  sensor '+j.now+' / dry '+j.base+(j.quiet?'  |  quiet':'');
+$('cm').textContent=j.cam;$('sv').textContent=j.sens;$('se').value=j.sens;
+$('al').href=j.alert;$('al').textContent=j.alert;$('sl').href=j.snap;$('sl').textContent=j.snap}).catch(()=>{})}
 function draw(raw){var c=$('cv'),x=c.getContext('2d'),im=x.createImageData(320,240),d=im.data;
-for(var i=0;i<76800;i++){var v=raw[i*2]<<8|raw[i*2+1],o=i*4;d[o]=(v>>11&31)*255/31;d[o+1]=(v>>5&63)*255/63;d[o+2]=(v&31)*255/31;d[o+3]=255}x.putImageData(im,0,0)}
-function snap(){if(busy)return;busy=true;fetch('/frame').then(r=>{if(!r.ok)throw 0;return r.arrayBuffer()}).then(b=>{draw(new Uint8Array(b));busy=false;if(lv)setTimeout(snap,300)})
+for(var i=0;i<76800;i++){var v=raw[i*2]<<8|raw[i*2+1],o=i*4;d[o]=(v>>11&31)*255/31;d[o+1]=(v>>5&63)*255/63;d[o+2]=(v&31)*255/31;d[o+3]=255}x.putImageData(im,0,0);
+$('ct').textContent=new Date().toLocaleTimeString()}
+function snap(){if(busy)return;busy=true;fetch(A('/frame')).then(bad).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer()}).then(b=>{draw(new Uint8Array(b));busy=false;if(lv)setTimeout(snap,300)})
 .catch(()=>{busy=false;st();if(lv)setTimeout(snap,2000)})}
-function live(){lv=!lv;$('lb').innerHTML=lv?'&#127909; Live: ON':'&#127909; Live: OFF';if(lv)snap()}
-function scan(){$('s').innerHTML='<option>Looking...</option>';fetch('/scan').then(r=>r.json()).then(l=>{$('s').innerHTML='<option value="">Pick Wi-Fi...</option>'+l.map(n=>'<option>'+n.replace(/</g,'')+'</option>').join('')})}
-function save(){var q='/save?k='+encodeURIComponent($('k').value)+'&s='+encodeURIComponent($('s').value)+'&p='+encodeURIComponent($('p').value);
-fetch(q).then(r=>r.text()).then(t=>alert(t))}
-st();setInterval(st,2000);snap();
+function live(){lv=!lv;$('lb').innerHTML=lv?'&#127909; Live: on':'&#127909; Live: off';if(lv)snap()}
+function scan(){$('s').innerHTML='<option>Looking...</option>';fetch(A('/scan')).then(bad).then(r=>r.json()).then(l=>{$('s').innerHTML='<option value="">Pick Wi-Fi...</option>'+l.map(n=>'<option>'+n.replace(/</g,'')+'</option>').join('')}).catch(()=>{})}
+function save(){if(!$('s').value){alert('Pick a Wi-Fi first');return}
+fetch(A('/save?s='+encodeURIComponent($('s').value)+'&p='+encodeURIComponent($('p').value))).then(bad).then(r=>r.text()).then(t=>alert(t)).catch(()=>{})}
+(function(){var c=$('snow'),x=c.getContext('2d'),f=[];function rs(){c.width=innerWidth;c.height=innerHeight}rs();addEventListener('resize',rs);
+for(var i=0;i<70;i++)f.push({x:Math.random()*innerWidth,y:Math.random()*innerHeight,r:1+Math.random()*2.6,s:.4+Math.random()*1.1,d:Math.random()*6});
+(function a(){x.clearRect(0,0,c.width,c.height);x.fillStyle='rgba(255,255,255,.85)';f.forEach(function(p){p.y+=p.s;p.d+=.02;p.x+=Math.sin(p.d)*.5;if(p.y>c.height){p.y=-5;p.x=Math.random()*c.width}x.beginPath();x.arc(p.x,p.y,p.r,0,7);x.fill()});requestAnimationFrame(a)})()})();
+if(!K)$('login').style.display='flex';else{st();snap()}setInterval(st,2500);
 </script></body></html>)HTML";
 
 void handleStatus() {
+  if (!ok()) return;
   String ip = WiFi.status() == WL_CONNECTED ? WiFi.SSID() + " " + WiFi.localIP().toString() : String("not joined yet");
   String j = "{\"wet\":" + String(wet ? "true" : "false") + ",\"now\":" + touchNow + ",\"base\":" + touchBase +
              ",\"sens\":" + sens + ",\"ip\":\"" + ip + "\",\"quiet\":" + String(millis() < silenceUntil ? "true" : "false") +
-             ",\"cam\":\"" + camMsg + "\",\"alert\":\"https://ntfy.sh/" + topic + "\"}";
+             ",\"cam\":\"" + camMsg + "\",\"alert\":\"https://ntfy.sh/" + topic + "\",\"snap\":\"" + snapLink() + "\"}";
   server.send(200, "application/json", j);
 }
 
 void handleFrame() {
+  if (!ok()) return;
   if (!capture()) { server.send(503, "text/plain", camMsg); return; }
   server.setContentLength(FB_SIZE);
   server.sendHeader("Cache-Control", "no-store");
@@ -368,6 +422,7 @@ void handleFrame() {
 }
 
 void handleJpg() {
+  if (!ok()) return;
   uint8_t *jpg = nullptr;
   size_t len = 0;
   if (!takeJpeg(&jpg, &len)) { server.send(503, "text/plain", camMsg); return; }
@@ -377,6 +432,8 @@ void handleJpg() {
 }
 
 void handleScan() {
+  if (!ok()) return;
+  if (WiFi.status() != WL_CONNECTED) WiFi.disconnect();   // stop retrying so the scan can run
   int n = WiFi.scanNetworks();
   String j = "[";
   for (int i = 0; i < n; i++) {
@@ -392,7 +449,11 @@ void handleScan() {
 }
 
 void handleSave() {
-  if (server.arg("k") != code) { server.send(403, "text/plain", "Wrong code"); return; }
+  if (!ok()) return;
+  if (server.arg("s") == ssid && server.arg("p") == pass && WiFi.status() == WL_CONNECTED) {
+    server.send(200, "text/plain", "Already saved and working.");
+    return;
+  }
   if (server.arg("s").length()) {
     prefs.putString("s", server.arg("s"));
     prefs.putString("p", server.arg("p"));
@@ -401,6 +462,34 @@ void handleSave() {
     ESP.restart();
   }
   server.send(200, "text/plain", "Pick a Wi-Fi first.");
+}
+
+// "New picture" from anywhere: watch the snap topic on ntfy
+void snapLoop() {
+  if (WiFi.status() != WL_CONNECTED || millis() - lastPoll < 15000) return;
+  lastPoll = millis();
+  WiFiClientSecure cli;
+  cli.setInsecure();
+  HTTPClient h;
+  if (!h.begin(cli, "https://ntfy.sh/" + snapTopic() + "/json?poll=1&since=" + snapSince)) return;
+  h.setTimeout(6000);
+  int rc = h.GET();
+  String body = rc == 200 ? h.getString() : String("");
+  h.end();
+  bool want = false;
+  int pos = 0;
+  while ((pos = body.indexOf("\"event\":\"message\"", pos)) >= 0) {
+    want = true;
+    pos += 10;
+  }
+  int i = body.lastIndexOf("\"id\":\"");
+  if (i >= 0) {
+    int e = body.indexOf('"', i + 6);
+    if (e > i) snapSince = body.substring(i + 6, e);
+  } else if (snapSince == "1m") {
+    snapSince = "15s";
+  }
+  if (want) sendNow = true;
 }
 
 // ---------------------------------------------------------------- setup / loop
@@ -444,16 +533,24 @@ void setup() {
   server.on("/pic.jpg", handleJpg);
   server.on("/scan", handleScan);
   server.on("/save", handleSave);
-  server.on("/beep", [] { beep(300); server.send(200, "text/plain", "Beep!"); });
-  server.on("/dry", [] { setDry(); server.send(200, "text/plain", "Thank you! This is dry now."); });
-  server.on("/silence", [] { silenceUntil = millis() + 30UL * 60UL * 1000UL; server.send(200, "text/plain", "Quiet for 30 minutes."); });
-  server.on("/sens", [] { sens = constrain(server.arg("v").toInt(), 5, 60); prefs.putInt("sens", sens); server.send(200, "text/plain", ""); });
-  server.on("/flip", [] { flipCam = !flipCam; prefs.putBool("fl", flipCam); applyFlip(); server.send(200, "text/plain", "Flipped."); });
-  server.on("/swap", [] { swapBytes = !swapBytes; prefs.putBool("sw", swapBytes); server.send(200, "text/plain", "Colors changed."); });
-  server.on("/send", [] {
+  server.on("/beep", [] { if (!ok()) return; beep(300); server.send(200, "text/plain", "Beep!"); });
+  server.on("/dry", [] { if (!ok()) return; setDry(); server.send(200, "text/plain", "Thank you! This is dry now."); });
+  server.on("/silence", [] { if (!ok()) return; silenceUntil = millis() + 30UL * 60UL * 1000UL; server.send(200, "text/plain", "Quiet for 30 minutes."); });
+  server.on("/sens", [] { if (!ok()) return; sens = constrain(server.arg("v").toInt(), 5, 60); prefs.putInt("sens", sens); server.send(200, "text/plain", ""); });
+  server.on("/flip", [] { if (!ok()) return; flipCam = !flipCam; prefs.putBool("fl", flipCam); applyFlip(); server.send(200, "text/plain", "Flipped."); });
+  server.on("/swap", [] { if (!ok()) return; swapBytes = !swapBytes; prefs.putBool("sw", swapBytes); server.send(200, "text/plain", "Colors changed."); });
+  server.on("/send", [] { if (!ok()) return;
     if (WiFi.status() != WL_CONNECTED) { server.send(200, "text/plain", "Join a Wi-Fi with internet first (Setup)."); return; }
     sendNow = true;
     server.send(200, "text/plain", "Sending the picture to your phones...");
+  });
+  server.on("/forget", [] {
+    if (!ok()) return;
+    prefs.remove("s");
+    prefs.remove("p");
+    server.send(200, "text/plain", "Wi-Fi forgotten. Restarting - join MotoDrain to set it up again.");
+    delay(800);
+    ESP.restart();
   });
   server.begin();
   beep(80);
@@ -478,8 +575,18 @@ void loop() {
     udp.print(m);
     udp.endPacket();
   }
-  if (WiFi.status() != WL_CONNECTED && ssid.length()) {
+  // MotoDrain hotspot: off while home Wi-Fi works, back on if Wi-Fi is lost
+  if (WiFi.status() == WL_CONNECTED) {
+    lostSince = 0;
+    if (apOn && millis() > 60000) { WiFi.softAPdisconnect(true); apOn = false; }
+  } else {
+    if (!lostSince) lostSince = millis();
+    if (!apOn && millis() - lostSince > 90000) { WiFi.mode(WIFI_AP_STA); WiFi.softAP("MotoDrain", code.c_str()); apOn = true; }
     static uint32_t retry = 0;
-    if (millis() - retry > 30000) { retry = millis(); WiFi.begin(ssid.c_str(), pass.c_str()); }
+    if (ssid.length() && WiFi.softAPgetStationNum() == 0 && millis() - retry > 30000) {
+      retry = millis();
+      WiFi.begin(ssid.c_str(), pass.c_str());
+    }
   }
+  snapLoop();
 }
