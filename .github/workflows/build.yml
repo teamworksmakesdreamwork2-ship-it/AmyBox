@@ -23,7 +23,18 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@2.0.17
           pip install --quiet esptool==4.8.1
+      - name: Moto Drain Watch (ESP32-S3 N16R8 + camera)
+        if: hashFiles('MotoDrain.ino') != ''
+        continue-on-error: true
+        run: |
+          mkdir -p MotoDrain && cp MotoDrain.ino MotoDrain/MotoDrain.ino
+          D=$(grep -o -m1 'MOTODRAIN_VERSION [0-9][0-9.]*' MotoDrain/MotoDrain.ino | cut -d' ' -f2)
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB --output-dir outd MotoDrain
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32s3 merge_bin -o MotoDrain-${D:-new}.bin --flash_mode dio --flash_freq 80m --flash_size 16MB \
+            0x0 outd/MotoDrain.ino.bootloader.bin 0x8000 outd/MotoDrain.ino.partitions.bin 0xe000 "$BOOT" 0x10000 outd/MotoDrain.ino.bin
       - name: Black touch box (ESP32-S3)
+        continue-on-error: true
         run: |
           arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir out AmyRelay
           BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
@@ -43,3 +54,4 @@ jobs:
           files: |
             Black-*.bin
             Yellow-*.bin
+            MotoDrain-*.bin
