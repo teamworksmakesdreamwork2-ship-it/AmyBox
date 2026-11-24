@@ -1,4 +1,4 @@
-// AMYRELAY_VERSION 4.7   (the build names the files with this number)
+// AMYRELAY_VERSION 5.0   (the build names the files with this number)
 /*  AmyRelay 4  -  a Wi-Fi switch box for the Amy AI phone app.      (c) Moto Takeda 316-304-5398
     Board: ESP32-S3 (a plain ESP32 works too).  Needs only the ESP32 board package - no extra libraries.
 
@@ -23,6 +23,9 @@
 #include <Preferences.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <HTTPClient.h>
+#include <ESPmDNS.h>
+#include <WiFiUdp.h>
 #include <driver/i2s.h>
 #include <math.h>
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CYD_TEST)
@@ -6203,6 +6206,87 @@ void cvSprite(int x, int y, const uint16_t* p){                    // a 36 x 36 
     for(int c = 0; c < 36; c++){ uint16_t v = pgm_read_word(&p[r * 36 + c]); int xx = x + c; if(v != 0xF81F && xx >= 0 && xx < LCD_W) CV[(yy - cvY0) * LCD_W + xx] = v; }
   }
 }
+// ---- the Jetson hub: every box checks in with the Jetson on your own Wi-Fi (locked with the secret code).  Tap Amy's face at the bottom of the screen for the Amy AI page.
+String lpw = "04170417";                                            // the local password: phones and the Jetson need it to get in
+String hubHost = "", hubAns = "", hubInfo = "", hubPhone = ""; IPAddress hubIp; bool hubOk = false, hubWait = false, jetOn = false, mdnsUp = false;
+unsigned long hubAt = 0, hubFindAt = 0; int ansPg = 0, hubFails = 0;
+String urlEnc(const String& s){ String o; const char* H = "0123456789ABCDEF"; for(unsigned int i = 0; i < s.length(); i++){ char c = s.charAt(i); if(isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') o += c; else { o += '%'; o += H[(c >> 4) & 15]; o += H[c & 15]; } } return o; }
+bool hubFind(){                                                     // the Jetson's address: moto-desktop.local or a number like 192.168.1.50
+  if(!hubHost.length()) return false;
+  IPAddress ip;
+  if(ip.fromString(hubHost)){ hubIp = ip; return true; }
+  if(hubHost.endsWith(".local")){
+    if(!mdnsUp){ mdnsUp = MDNS.begin("amy-box"); }
+    ip = MDNS.queryHost(hubHost.substring(0, hubHost.length() - 6), 1500);
+    if((uint32_t)ip != 0){ hubIp = ip; return true; }
+    return false;
+  }
+  if(WiFi.hostByName(hubHost.c_str(), ip) && (uint32_t)ip != 0){ hubIp = ip; return true; }
+  return false;
+}
+bool hubGet(const String& path, String& body){
+  if((uint32_t)hubIp == 0){ if(millis() - hubFindAt < 120000UL && hubFindAt) return false; hubFindAt = millis(); if(!hubFind()) return false; }
+  WiFiClient c; HTTPClient h; h.setConnectTimeout(1500); h.setTimeout(2000);
+  if(!h.begin(c, String("http://") + hubIp.toString() + ":8090" + path)) return false;
+  int r = h.GET(); if(r == 200) body = h.getString(); h.end();
+  if(r != 200){ if(++hubFails >= 3){ hubIp = IPAddress(); hubFails = 0; } return false; }
+  hubFails = 0; return true;
+}
+String hubName(){ return board == 3 ? String("YELLOW ") + nm[0] : board == 2 ? String("BLACK ") + nm[0] : board == 4 ? String("SMALL ") + nm[0] : String("BOX ") + nm[0]; }
+void hubHello(){
+  String b;
+  bool ok = hubGet("/hello?k=" + urlEnc(lpw) + "&n=" + urlEnc(hubName()) + "&ip=" + WiFi.localIP().toString() + "&s=" + urlEnc(stateText()), b);
+  hubOk = ok;
+  if(!ok) return;
+  String a = jsonField(b, "a"); if(a != hubAns){ hubAns = a; ansPg = 0; }
+  hubWait = jsonField(b, "w") == "1"; hubInfo = jsonField(b, "i"); hubPhone = jsonField(b, "p");
+}
+void hubLoop(){
+  if(!hubHost.length() || apUp || WiFi.status() != WL_CONNECTED || !lpw.length()) return;
+  unsigned long gap = jetOn ? (hubWait ? 1500UL : 3000UL) : 20000UL;
+  if(hubAt && millis() - hubAt < gap) return;
+  hubAt = millis(); if(!hubAt) hubAt = 1;
+  hubHello();
+}
+void hubAsk(const char* q){
+  String b;
+  if(!hubHost.length()){ hubAns = "Put the Jetson address on the setup page first."; return; }
+  if(hubGet("/ask?k=" + urlEnc(lpw) + "&src=" + urlEnc(hubName()) + "&q=" + urlEnc(q), b)){ hubWait = true; hubOk = true; hubAt = millis(); }
+  else { hubOk = false; hubAns = "I can't reach the Jetson. Is it on, and on the same Wi-Fi?"; ansPg = 0; }
+}
+int ansLines(String* L, int max){                                   // Amy's answer cut into lines of 25 letters
+  String s = ""; for(unsigned int i = 0; i < hubAns.length(); i++){ char c = hubAns.charAt(i); s += (c >= 32 && c <= 126) ? c : ' '; }
+  int n = 0; s.trim();
+  while(s.length() && n < max){
+    if(s.length() <= 25){ L[n++] = s; break; }
+    int cut = s.lastIndexOf(' ', 25); if(cut <= 0) cut = 25;
+    L[n++] = s.substring(0, cut); s = s.substring(cut); s.trim();
+  }
+  return n;
+}
+static const char* JQ[3] = {"Say hello to Moto in one short friendly sentence.", "Tell Moto one short clean joke.", "Give Moto one short tip to keep going today."};
+static const char* JB[5] = {"HELLO", "JOKE", "BOOST", "NEXT", "EXIT"};
+void jetTap(int i){
+  fxNote(1500, 30);
+  if(i == 4){ jetOn = false; return; }
+  if(i == 3){ String L[24]; int n = ansLines(L, 24); ansPg = (ansPg + 1) * 4 < n ? ansPg + 1 : 0; return; }
+  if(i >= 0 && i < 3){ hubAns = ""; ansPg = 0; hubAsk(JQ[i]); }
+}
+void paintJet(){
+  cvText(8, 3, "AMY AI", rgb(255, 220, 90), 1);
+  String st = !hubHost.length() ? String("NO JETSON SET") : hubOk ? String("JETSON OK") : String("NO JETSON");
+  cvText(LCD_W - 6 - (int)st.length() * FW, 3, st.c_str(), hubOk ? rgb(140, 255, 170) : rgb(255, 150, 150), 1);
+  cvGlass(4, 33, LCD_W - 8, 106, 12, rgb(14, 34, 84), 170, 0);
+  String L[24]; int n = ansLines(L, 24);
+  if(!n) cvText(14, 38, hubWait ? "Amy is thinking..." : "Tap a button to ask Amy", rgb(200, 210, 230), 1);
+  for(int k = 0; k < 4; k++){ int j = ansPg * 4 + k; if(j < n) cvText(10, 37 + k * 25, L[j].c_str(), 0xFFFF, 1); }
+  for(int i = 0; i < 5; i++){
+    int x = 2 + i * 63;
+    cvGlass(x + 2, 151, 59, 47, 10, 0x0000, 140, 1);
+    cvGlass(x, 146, 59, 47, 10, i == 4 ? rgb(225, 50, 60) : i == 3 ? rgb(60, 100, 170) : rgb(20, 170, 150), 190, 0);
+    cvText(x + (59 - (int)strlen(JB[i]) * FW) / 2, 158, JB[i], 0xFFFF, 1);
+  }
+}
 // two pages of six buttons, never hidden.  Page 1: switch 1 2 3, switch 4 (buzzer), MUSIC, MORE.   Page 2: GAME, SLEEP, CAMERA, AI, LOUD, BACK.
 bool nameHas(int i, const char* w){ return nm[i].indexOf(w) >= 0; }
 bool isDoor(int i){ return i < NREL && (nameHas(i, "GARAGE") || nameHas(i, "DOOR") || nameHas(i, "GATE")) && !nameHas(i, "LIGHT"); }      // a door gets one short press
@@ -6244,6 +6328,9 @@ void paintScene(){                                                 // paints wha
       if(gb[i]) cvText(x + 17, y, gb[i] == 1 ? "X" : "O", 0xFFFF, 2);
     }
     foot = gWin == 0 ? String("YOUR TURN") : gWin == 1 ? String("YOU WIN! TAP TO PLAY") : gWin == 2 ? String("I WIN! TAP TO PLAY") : String("TIE! TAP TO PLAY");
+  } else if(jetOn){
+    paintJet();
+    foot = hubWait ? String("AMY IS THINKING...") : hubPhone.length() ? (hubPhone.length() <= 15 ? String("PHONE ") + hubPhone : hubPhone) : hubInfo.length() ? hubInfo : String("TAP EXIT TO GO BACK");
   } else {
     cvText(8, 3, "LET THERE BE LIGHT", 0xFFFF, 1);
     cvText(LCD_W - 6 - (int)net.length() * FW, 3, net.c_str(), net == "READY" ? rgb(140, 255, 170) : rgb(255, 214, 90), 1);
@@ -6254,12 +6341,14 @@ void paintScene(){                                                 // paints wha
   cvGlass(0, 204, LCD_W, 36, 0, rgb(6, 14, 40), 160, 0);
   cvSprite(3, 204, IC_GIRL);
   if(foot.length() > 22) foot = foot.substring(0, 22);
+  if(foot.length() > 22 && jetOn && !hubWait && hubPhone.length()) foot = hubPhone.substring(0, 22);
   cvText(44, 210, foot.c_str(), 0xFFFF, 1);
 }
 void lcdDraw(bool force){
   if(!lcdOn) return;
   bool msgOn = msgUntil && (long)(msgUntil - millis()) > 0;
   String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet);
+  if(jetOn){ key += "|j" + String(hubOk) + String(hubWait) + String(ansPg) + hubAns + hubInfo + hubPhone; }
   if(gameOn){ key += "|g"; for(int i = 0; i < 9; i++) key += String((int)gb[i]); key += String(gWin); }
   if(!force && key == lcdShown) return;
   lcdShown = key;
@@ -6274,6 +6363,155 @@ void announce(int i, bool pulse){                                  // a switch c
   else if(on[i]){ fxNote(660, 90); fxNote(990, 170); sayClip(light ? 0 : 3); showMsg(nm[i] + " ON"); }
   else { fxNote(600, 90); fxNote(400, 170); sayClip(light ? 1 : 4); showMsg(nm[i] + " OFF"); }
 }
+// ---- boxes find each other on your Wi-Fi (no Jetson needed), and every box serves the Moto Hub phone page at /hub
+WiFiUDP pUdp; bool pUdpOn = false; unsigned long pSentAt = 0;
+struct Peer { String ip, n, s, m; unsigned long seen; };
+String nmList(){ String o; for(int i = 0; i < NREL; i++){ if(i) o += ','; o += nm[i]; } return o; }
+Peer peers[12]; int nPeers = 0;
+void peerPut(const String& ip, const String& n, const String& st, const String& mm = ""){
+  int k = -1; for(int i = 0; i < nPeers; i++) if(peers[i].ip == ip) k = i;
+  if(k < 0){ if(nPeers < 12) k = nPeers++; else { k = 0; for(int i = 1; i < nPeers; i++) if(peers[i].seen < peers[k].seen) k = i; } }
+  peers[k].ip = ip; peers[k].n = n.substring(0, 24); peers[k].s = st.substring(0, 40); peers[k].m = mm.substring(0, 40); peers[k].seen = millis();
+}
+void peerLoop(){
+  if(apUp || WiFi.status() != WL_CONNECTED){ return; }
+  if(!pUdpOn){ pUdpOn = pUdp.begin(4210); }
+  if(!pSentAt || millis() - pSentAt > 10000UL){
+    pSentAt = millis(); if(!pSentAt) pSentAt = 1;
+    String m = "AMYBOX|" + hubName() + "|" + stateText() + "|" + nmList();
+    pUdp.beginPacket(IPAddress(255, 255, 255, 255), 4210); pUdp.write((const uint8_t*)m.c_str(), m.length()); pUdp.endPacket();
+  }
+  int n = pUdp.parsePacket();
+  if(n > 0 && n < 200){
+    char b[200]; int r = pUdp.read((uint8_t*)b, 199); if(r < 0) r = 0; b[r] = 0; String m(b);
+    String ip = pUdp.remoteIP().toString();
+    if(m.startsWith("AMYBOX|") && ip != WiFi.localIP().toString()){ int a = m.indexOf('|', 7); if(a > 0){ int c2 = m.indexOf('|', a + 1); if(c2 > 0) peerPut(ip, m.substring(7, a), m.substring(a + 1, c2), m.substring(c2 + 1)); else peerPut(ip, m.substring(7, a), m.substring(a + 1)); } }
+  }
+}
+String jsq(const String& s){ String o = "\""; for(unsigned int i = 0; i < s.length(); i++){ char c = s.charAt(i); if(c == '"' || c == '\\') o += '\\'; if(c >= 32) o += c; } return o + "\""; }
+void handlePeers(){
+  web.sendHeader("Access-Control-Allow-Origin", "*");
+  if(!lpw.length() || web.arg("k") != lpw){ web.send(403, "application/json", "{}"); return; }
+  String me = WiFi.localIP().toString();
+  String j = "{\"me\":" + jsq(me) + ",\"jet\":" + jsq(hubOk && (uint32_t)hubIp ? hubIp.toString() + ":8090" : String("")) + ",\"boxes\":[";
+  j += "{\"n\":" + jsq(hubName()) + ",\"ip\":" + jsq(me) + ",\"s\":" + jsq(stateText()) + ",\"nm\":" + jsq(nmList()) + ",\"age\":0}";
+  for(int i = 0; i < nPeers; i++){ unsigned long age = (millis() - peers[i].seen) / 1000; if(age > 300) continue; j += ",{\"n\":" + jsq(peers[i].n) + ",\"ip\":" + jsq(peers[i].ip) + ",\"s\":" + jsq(peers[i].s) + ",\"nm\":" + jsq(peers[i].m) + ",\"age\":" + String(age) + "}"; }
+  j += "]}";
+  web.send(200, "application/json", j);
+}
+static const char HUB_PAGE[] PROGMEM = R"HUB(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><meta name=theme-color content="#02060d"><title>Moto Hub</title><style>
+:root{--c:#2ef2ff;--c2:#7a5cff;--a:#ffb21e;--r:#ff3b5c;--g:#33ff9a;--bg:#02060d;--p:#071425}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);color:#d8f6ff;font-family:"Rajdhani","Orbitron",system-ui,Roboto,Arial;letter-spacing:.5px;overflow-x:hidden}
+#sky{position:fixed;inset:0;z-index:0}#lockv{position:fixed;inset:0;z-index:20;background:#02060df2;display:none;align-items:center;justify-content:center}#lockv .pan{width:90%;max-width:380px;text-align:center}
+.grid{position:fixed;left:-50%;right:-50%;bottom:-10%;height:55%;z-index:0;background:linear-gradient(transparent 0,#2ef2ff10 2px,transparent 3px) 0 0/100% 40px,linear-gradient(90deg,transparent 0,#2ef2ff10 2px,transparent 3px) 0 0/40px 100%;transform:perspective(380px) rotateX(62deg);transform-origin:bottom;animation:gr 3s linear infinite;mask-image:linear-gradient(transparent,#000 70%)}
+@keyframes gr{to{background-position:0 40px,0 0}}
+#flash{position:fixed;inset:0;z-index:50;pointer-events:none;background:radial-gradient(circle at 50% 40%,#fff6,#2ef2ff22 40%,transparent 70%);opacity:0;transition:opacity .5s}
+.wrap{position:relative;z-index:2;padding:10px 12px 108px;max-width:560px;margin:0 auto}
+.top{display:flex;align-items:center;gap:10px;padding:6px 4px 10px}
+.emb{width:44px;height:44px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:conic-gradient(from 0deg,var(--c),var(--c2),var(--a),var(--c));display:grid;place-items:center;animation:spin 8s linear infinite}
+.emb b{width:36px;height:36px;clip-path:inherit;background:#04101c;display:grid;place-items:center;color:var(--c);font-weight:900;font-size:18px;animation:spin 8s linear infinite reverse}
+@keyframes spin{to{transform:rotate(360deg)}}
+.tt{font-size:22px;font-weight:800;text-transform:uppercase;letter-spacing:3px;text-shadow:0 0 12px var(--c)}
+.st{font-size:12px;color:#7fb9c9;letter-spacing:1.5px;text-transform:uppercase}
+.lock{margin-left:auto;font-size:11px;padding:5px 10px;border:1px solid #2ef2ff55;border-radius:3px;color:var(--g);text-transform:uppercase;letter-spacing:2px;box-shadow:inset 0 0 12px #33ff9a22}
+.lock i{display:inline-block;width:7px;height:7px;background:var(--g);border-radius:50%;margin-right:6px;box-shadow:0 0 8px var(--g);animation:bl 1.6s infinite}
+@keyframes bl{50%{opacity:.3}}
+.pan{position:relative;margin:12px 0;padding:16px 14px;background:linear-gradient(160deg,#0a1d33ee,#050d18ee);border:1px solid #2ef2ff33;clip-path:polygon(14px 0,calc(100% - 14px) 0,100% 14px,100% calc(100% - 14px),calc(100% - 14px) 100%,14px 100%,0 calc(100% - 14px),0 14px);box-shadow:inset 0 0 40px #2ef2ff12}
+.pan:before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(0deg,#ffffff05 0 1px,transparent 1px 3px);pointer-events:none}
+.pan h2{margin:0 0 12px;font-size:13px;letter-spacing:4px;color:var(--c);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.pan h2:after{content:"";flex:1;height:1px;background:linear-gradient(90deg,#2ef2ff88,transparent)}
+.core{display:flex;gap:14px;align-items:center}
+.orb{flex:0 0 92px;height:92px;position:relative}
+.orb .r{position:absolute;inset:0;border-radius:50%;border:2px solid transparent;border-top-color:var(--c);border-left-color:#2ef2ff55;animation:spin 3s linear infinite}
+.orb .r2{inset:9px;border-top-color:var(--a);border-right-color:#ffb21e55;animation-duration:2s;animation-direction:reverse}
+.orb .c{position:absolute;inset:20px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,var(--c) 30%,#0a5f7a 70%,#03141f);box-shadow:0 0 30px var(--c),inset 0 0 12px #000}
+.think .c{animation:pu .6s ease-in-out infinite alternate;background:radial-gradient(circle at 35% 30%,#fff,var(--a) 30%,#7a4a00 70%,#140a00);box-shadow:0 0 40px var(--a)}
+.think .r{animation-duration:.8s}
+@keyframes pu{to{transform:scale(1.15)}}
+.say{flex:1;min-height:92px;padding:10px 12px;border-left:2px solid var(--c);background:#02101bcc;font-size:18px;line-height:1.4;font-family:system-ui,Roboto,Arial;letter-spacing:0;color:#e9fbff;white-space:pre-wrap;max-height:42vh;overflow:auto;user-select:text}
+.row{display:flex;gap:8px;margin-top:12px}
+input{flex:1;min-width:0;font-size:17px;padding:13px 12px;background:#010a12;border:1px solid #2ef2ff55;color:#fff;outline:none;font-family:system-ui;border-radius:4px;box-shadow:inset 0 0 14px #2ef2ff22;user-select:text}
+.k{position:relative;border:0;cursor:pointer;color:#e8fbff;font:800 15px/1 inherit;letter-spacing:2px;text-transform:uppercase;padding:14px 14px;border-radius:6px;
+ background:linear-gradient(180deg,#1b3c5c,#0b1c2e 55%,#07121e);box-shadow:0 5px 0 #020a12,0 7px 14px #000a,inset 0 1px 0 #6fe9ff66,inset 0 0 0 1px #2ef2ff44;transition:transform .07s,box-shadow .07s;text-shadow:0 0 6px #2ef2ff99}
+.k:active,.k.pr{transform:translateY(4px);box-shadow:0 1px 0 #020a12,0 2px 6px #000a,inset 0 1px 0 #6fe9ff44,inset 0 0 0 1px #2ef2ff88}
+.k.c{background:linear-gradient(180deg,#0fa9c0,#06637a 55%,#044657);box-shadow:0 5px 0 #022a35,0 7px 18px #2ef2ff44,inset 0 1px 0 #b8f8ff,inset 0 0 0 1px #2ef2ff}
+.k.a{background:linear-gradient(180deg,#e89a10,#9a5c00 55%,#6a3e00);box-shadow:0 5px 0 #3a2200,0 7px 18px #ffb21e44,inset 0 1px 0 #ffe2a0,inset 0 0 0 1px var(--a);text-shadow:0 0 6px #ffcf6a}
+.k.r{background:linear-gradient(180deg,#e0304e,#8c1026 55%,#5c0818);box-shadow:0 5px 0 #33040d,0 7px 18px #ff3b5c44,inset 0 1px 0 #ffb0bd,inset 0 0 0 1px var(--r)}
+.k.ic{width:52px;padding:0;font-size:22px}.k.on{animation:gl 1.5s infinite alternate}@keyframes gl{to{box-shadow:0 5px 0 #022a35,0 0 26px var(--c),inset 0 1px 0 #b8f8ff,inset 0 0 0 1px #2ef2ff}}
+.br{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.br .k{padding:12px 4px;font-size:13px}.br small{display:block;font-size:10px;letter-spacing:1px;opacity:.7;margin-top:5px}
+.box{margin-top:12px}.bx{display:flex;justify-content:space-between;font-size:15px;font-weight:800;letter-spacing:2px;color:#bff6ff;text-transform:uppercase}.bx span{font-size:11px;color:#6fa4b4;font-weight:600}
+.sw{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:10px}
+.s{position:relative;height:96px;text-align:left;padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.s .nm{font-size:15px}.s .vl{font-size:12px;letter-spacing:3px;opacity:.85}
+.s .led{position:absolute;right:12px;top:12px;width:14px;height:14px;border-radius:50%;background:#0b2230;box-shadow:inset 0 0 4px #000}
+.s.on{background:linear-gradient(180deg,#ffd35a,#e29400 55%,#9a5c00);color:#2a1600;text-shadow:none;box-shadow:0 5px 0 #4a2a00,0 0 30px #ffb21e88,inset 0 1px 0 #fff3c0}
+.s.on .led{background:#fff7c8;box-shadow:0 0 14px #fff,0 0 30px var(--a)}
+.s.door{background:linear-gradient(180deg,#2848b8,#152a74 55%,#0c1a4a);box-shadow:0 5px 0 #060d26,0 7px 18px #4a6cff44,inset 0 1px 0 #a8b8ff,inset 0 0 0 1px #5a7cff}
+.cams{display:grid;gap:12px}.cam{position:relative;border:1px solid #2ef2ff66;background:#000;clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px)}
+.cam img,.cam video{width:100%;display:block;min-height:140px}.cam .tg{position:absolute;left:10px;top:8px;font-size:12px;letter-spacing:2px;background:#000a;padding:3px 8px;color:var(--c)}
+.cam .rec{position:absolute;right:10px;top:8px;font-size:12px;letter-spacing:2px;color:var(--r);font-weight:800}.cam .rec:before{content:"\25CF ";animation:bl 1s infinite}
+.cam .sn{position:absolute;right:8px;bottom:8px}
+.em{color:#6fa4b4;font-size:14px;font-family:system-ui;letter-spacing:0}
+nav{position:fixed;z-index:5;left:8px;right:8px;bottom:8px;max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:10px;background:linear-gradient(180deg,#0a1a2cf2,#040b14f2);border:1px solid #2ef2ff44;clip-path:polygon(18px 0,calc(100% - 18px) 0,100% 18px,100% 100%,0 100%,0 18px)}
+nav .k{padding:10px 0 8px;font-size:12px}nav .k b{display:block;font-size:22px;margin-bottom:3px}
+.tab{display:none}.tab.on{display:block;animation:in .3s}@keyframes in{from{opacity:0;transform:translateY(8px)}}
+.ft{text-align:center;font-size:11px;color:#4f7f8f;letter-spacing:1.5px;margin:12px 0}
+</style></head><body>
+<canvas id=sky></canvas><div class=grid></div><div id=flash></div>
+<div id=lockv><div class=pan><div class=emb style="margin:0 auto 12px"><b>M</b></div><h2>Moto Hub locked</h2><input id=pw type=password inputmode=numeric placeholder="Password"><div class=row><button class="k c" style=flex:1 onclick=unlock()>Unlock</button></div><div class=em id=pwm style="margin-top:8px"></div></div></div>
+<div class=wrap>
+<div class=top><div class=emb><b>M</b></div><div><div class=tt>Moto Hub</div><div class=st id=st>Linking...</div></div><div class=lock><i id=dot></i>Secure</div></div>
+<div class="tab on" id=t0><div class=pan><h2>Switches</h2><div id=boxes><div class=em>Looking for boxes...</div></div>
+<div class=em style="margin-top:12px">Hold a button 1 second to rename it. A name with DOOR or GARAGE gives one short press.</div></div></div>
+<div class=tab id=t1><div class=pan><h2>Amy Core</h2>
+<div class=core><div class=orb id=orb><div class=r></div><div class="r r2"></div><div class=c></div></div><div class=say id=ans>...</div></div>
+<div class=row><input id=q placeholder="Command Amy..." onkeydown="if(event.key=='Enter')ask()"><button class="k c" onclick=ask()>Send</button></div>
+<div class=row><button class="k r" style=flex:1 onclick=stopAll()>&#9632; Stop</button><button class=k style=flex:1 onclick=jopen(0)>&#128640; Full cockpit</button></div></div></div>
+<div class=tab id=t2><div class=pan><h2>Security cams</h2><div class=cams id=cams><div class=em>The cameras come through the Jetson.</div></div>
+<div class=row><button class="k c" style=flex:1 onclick=jopen(2)>&#128247; Share a camera</button></div></div></div>
+<div class=ft>&copy; Moto Takeda 316-304-5398 &middot; works with or without the Jetson</div>
+</div>
+<nav><button class="k c" onclick=tab(0)><b>&#9211;</b>Switches</button><button class=k onclick=tab(1)><b>&#9673;</b>Amy</button><button class=k onclick=tab(2)><b>&#9678;</b>Cams</button></nav>
+<script>
+var K='',J='',last='',AC=null;try{K=localStorage.getItem('mk')||''}catch(e){}
+function $(i){return document.getElementById(i)}function esc(s){return String(s).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')}
+function snd(type){try{AC=AC||new(window.AudioContext||window.webkitAudioContext)();var t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);
+ if(type=='on'){o.type='sawtooth';o.frequency.setValueAtTime(220,t);o.frequency.exponentialRampToValueAtTime(1320,t+.18);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.2,t+.03);g.gain.exponentialRampToValueAtTime(.0001,t+.35);o.start(t);o.stop(t+.36)}
+ else if(type=='off'){o.type='sawtooth';o.frequency.setValueAtTime(900,t);o.frequency.exponentialRampToValueAtTime(110,t+.25);g.gain.setValueAtTime(.18,t);g.gain.exponentialRampToValueAtTime(.0001,t+.3);o.start(t);o.stop(t+.31)}
+ else{o.type='triangle';o.frequency.setValueAtTime(1600,t);o.frequency.exponentialRampToValueAtTime(700,t+.06);g.gain.setValueAtTime(.15,t);g.gain.exponentialRampToValueAtTime(.0001,t+.09);o.start(t);o.stop(t+.1)}}catch(e){}}
+function flash(){var f=$('flash');f.style.transition='none';f.style.opacity=1;setTimeout(()=>{f.style.transition='opacity .6s';f.style.opacity=0},60)}
+document.addEventListener('pointerdown',e=>{if(e.target.closest('.k'))snd('tick')});
+function tab(n){document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('on',i==n));document.querySelectorAll('nav .k').forEach((t,i)=>t.classList.toggle('c',i==n))}
+function unlock(){K=$('pw').value.trim();try{localStorage.setItem('mk',K)}catch(e){}$('lockv').style.display='none';tick()}
+function NM(){try{return JSON.parse(localStorage.getItem('mn')||'{}')}catch(e){return{}}}
+function nm(id,def){return NM()[id]||def}
+function isDoor(n){return /DOOR|GARAGE|GATE/i.test(n)}
+var holdT=null,held=false;
+function hd(id){held=false;holdT=setTimeout(()=>{held=true;var v=prompt('Name for this button (like LIGHT or GARAGE DOOR):',nm(id,''));if(v!==null){var m=NM();m[id]=v.toUpperCase().slice(0,14);try{localStorage.setItem('mn',JSON.stringify(m))}catch(e){}tick()}},900)}
+function hu(){clearTimeout(holdT)}
+function sw(ip,n,name,isOn){if(held){held=false;return}var door=isDoor(name);if(door||!isOn){snd('on');flash()}else snd('off');
+ fetch('http://'+ip+'/cmd?k='+encodeURIComponent(K)+'&c='+encodeURIComponent(n+(door?' pulse':' toggle'))).then(()=>setTimeout(tick,300))}
+function ask(){var q=$('q').value.trim();if(!q)return;if(!J){$('ans').textContent='The Jetson is off. Switches still work.';return}$('q').value='';$('ans').textContent='Thinking...';$('orb').classList.add('think');fetch('http://'+J+'/ask?src=phone&k='+encodeURIComponent(K)+'&q='+encodeURIComponent(q))}
+function stopAll(){try{speechSynthesis.cancel()}catch(e){}if(J)fetch('http://'+J+'/stop?k='+encodeURIComponent(K));snd('off')}
+function jopen(t){if(J)location.href='https://'+J.split(':')[0]+':8443/?k='+encodeURIComponent(K)+'&tab='+t;else alert('The Jetson is off right now.')}
+function tick(){if(!K){$('lockv').style.display='flex';return}
+ fetch('/peers?k='+encodeURIComponent(K)).then(r=>{if(r.status==403){K='';$('pwm').textContent='Wrong password';$('lockv').style.display='flex';throw 0}return r.json()}).then(d=>{
+  J=d.jet;$('st').textContent=d.boxes.length+' box'+(d.boxes.length==1?'':'es')+' · Jetson '+(J?'online':'off');$('dot').style.background='#33ff9a';
+  var h='';d.boxes.forEach(x=>{h+='<div class=box><div class=bx>'+esc(x.n)+'<span>'+esc(x.ip)+(x.age>40?' · offline '+x.age+'s':' · online')+'</span></div><div class=sw>';var names=(x.nm||'').split(',');
+   (x.s||'').replace(/^s /,'').split(' ').forEach(p=>{var m=p.split(':');if(m.length!=2||m[1]=='-')return;var n=+m[0],id=x.ip+'#'+n,on=m[1]=='on',name=nm(id,names[n-1]||('Switch '+n)),door=isDoor(name);
+    h+='<button class="k s'+(door?' door':on?' on':'')+'" onpointerdown="hd(\''+esc(id)+'\')" onpointerup=hu() onpointerleave=hu() onclick="sw(\''+esc(x.ip)+'\','+n+',\''+esc(name)+'\','+on+')"><i class=led></i><span class=nm>'+esc(name)+'</span><span class=vl>'+(door?'TAP = OPEN / CLOSE':on?'ON':'OFF')+'</span></button>'});h+='</div></div>'});
+  $('boxes').innerHTML=h||'<div class=em>No boxes found yet.</div>';
+  if(J)fetch('http://'+J+'/status?k='+encodeURIComponent(K)).then(r=>r.json()).then(s=>{$('orb').classList.toggle('think',s.busy);$('ans').textContent=s.busy?'Thinking...':(s.answer||'Systems online, Moto.');
+   if(!s.busy&&s.answer&&s.answer!=last&&s.answer!='Stopped.'){last=s.answer;if(window.speechSynthesis){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(s.answer.slice(0,600)))}}
+   var c='';(s.cams||[]).forEach(id=>{c+='<div class=cam><img src="http://'+J+'/cam/get?id='+encodeURIComponent(id)+'&k='+encodeURIComponent(K)+'&t='+Date.now()+'"><span class=tg>CAM '+esc(id)+'</span><span class=rec>LIVE</span></div>'});$('cams').innerHTML=c||'<div class=em>No cameras sharing yet.</div>'}).catch(e=>{});
+  else{$('ans').textContent='The Jetson is off. Switches still work.'}
+ }).catch(e=>{if(e!==0){$('st').textContent='No connection';$('dot').style.background='#ff3b5c'}})}
+(function(){var c=$('sky'),x=c.getContext('2d'),S=[];function rs(){c.width=innerWidth;c.height=innerHeight}rs();onresize=rs;for(var i=0;i<120;i++)S.push([Math.random()*2-1,Math.random()*2-1,Math.random()]);
+ (function f(){x.fillStyle='#02060d';x.fillRect(0,0,c.width,c.height);var w=c.width/2,h=c.height/2;S.forEach(s=>{s[2]-=.004;if(s[2]<=.02){s[0]=Math.random()*2-1;s[1]=Math.random()*2-1;s[2]=1}x.fillStyle='rgba(160,240,255,'+(1-s[2])+')';x.fillRect(w+s[0]/s[2]*w*.6,h+s[1]/s[2]*h*.6,(1-s[2])*2,(1-s[2])*2)});requestAnimationFrame(f)})()})();
+setInterval(tick,2500);tick();
+</script></body></html>)HUB";
+void handleHub(){ web.send_P(200, "text/html", HUB_PAGE); }
 // ---- the game: tic tac toe against the box
 uint32_t gRand(){ gSeed = gSeed * 1664525UL + 1013904223UL + (uint32_t)millis(); return gSeed >> 8; }
 static const uint8_t GL[8][3] = {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}, {0, 3, 6}, {1, 4, 7}, {2, 5, 8}, {0, 4, 8}, {2, 4, 6}};
@@ -6393,7 +6631,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>AmyRelay 4.7. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>AmyRelay 5.0. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 void tpLoop(){
@@ -6412,6 +6650,8 @@ void tpLoop(){
       else if(gWin) gameStart(false);
       else if(x >= 67 && x < 256 && y >= 34 && y < 202) gTap((x - 67) / 63 + ((y - 34) / 56) * 3);
     }
+    else if(jetOn){ if(y >= 140 && y < 204){ int i = x / 64; if(i > 4) i = 4; jetTap(i); } }
+    else if(y >= 204 && x < 60){ jetOn = true; ansPg = 0; hubAt = 0; fxNote(1500, 30); }      // Amy's face at the bottom: the Amy AI page
     else if(y >= 31 && y < 203){ int i = (x < 108 ? 0 : (x < 213 ? 1 : 2)) + (y < 117 ? 0 : 3); tileTap(i); }
     lcdDraw(false);
   }
@@ -6479,10 +6719,19 @@ String cleanName(String s, int i){                              // big letters, 
 }
 String page(const String& note){
   String h = String("<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Moto Box</title><style>"
-    "body{font-family:system-ui,Arial;background:#11151b;color:#eee;margin:0;padding:14px;font-size:17px}h2{margin:6px 0}"
-    "input,select,button{font-size:18px;padding:11px;border-radius:9px;border:0;width:100%;box-sizing:border-box;margin:5px 0 11px}"
-    "button{background:#1b8a3a;color:#fff;font-weight:700}.b2{background:#2d3a4f}.card{background:#1c2430;border-radius:12px;padding:12px;margin:10px 0}"
-    "small{color:#9fb0c3}.pin{width:23%;display:inline-block;margin-right:1%}.ok{color:#7dffb0}.no{color:#ffb37d}</style></head><body><h2>Amy Box setup</h2>");
+    "@keyframes st{to{background-position:0 600px,0 300px}}@keyframes gl{50%{box-shadow:0 0 22px #2ef2ff88,inset 0 0 18px #2ef2ff22}}@keyframes sp{to{transform:rotate(360deg)}}"
+    "body{font-family:system-ui,Arial;color:#dff6ff;margin:0;padding:14px;font-size:17px;background:radial-gradient(1px 1px at 20px 30px,#fff,transparent),radial-gradient(1px 1px at 120px 80px,#9ff,transparent),radial-gradient(1.5px 1.5px at 260px 150px,#fff,transparent),radial-gradient(1px 1px at 330px 260px,#bdf,transparent),radial-gradient(1px 1px at 80px 220px,#fff,transparent),#02060d;background-size:360px 300px;animation:st 20s linear infinite}"
+    "h2{margin:6px 0 12px;letter-spacing:3px;text-transform:uppercase;color:#2ef2ff;text-shadow:0 0 12px #2ef2ff;display:flex;align-items:center;gap:10px}"
+    ".emb{width:40px;height:40px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:conic-gradient(#2ef2ff,#7a5cff,#ffb21e,#2ef2ff);animation:sp 6s linear infinite}"
+    "input,select,button{font-size:18px;padding:11px;border-radius:8px;border:1px solid #2ef2ff55;width:100%;box-sizing:border-box;margin:5px 0 11px;background:#010a12;color:#fff}"
+    "button{background:linear-gradient(180deg,#0fa9c0,#06637a 55%,#044657);color:#fff;font-weight:800;letter-spacing:2px;text-transform:uppercase;box-shadow:0 5px 0 #022a35,0 8px 18px #2ef2ff44;border:0}button:active{transform:translateY(4px);box-shadow:0 1px 0 #022a35}"
+    ".b2{background:linear-gradient(180deg,#1b3c5c,#0b1c2e 55%,#07121e);box-shadow:0 5px 0 #020a12,inset 0 0 0 1px #2ef2ff44}"
+    ".card{background:linear-gradient(160deg,#0a1d33ee,#050d18ee);border:1px solid #2ef2ff33;border-radius:14px;padding:12px;margin:12px 0;animation:gl 4s ease-in-out infinite}"
+    ".big{display:block;text-align:center;text-decoration:none;padding:18px;font-size:20px;font-weight:900;letter-spacing:3px;color:#2a1600;border-radius:12px;background:linear-gradient(180deg,#ffd35a,#e29400 55%,#9a5c00);box-shadow:0 6px 0 #4a2a00,0 0 30px #ffb21e88}"
+    "small{color:#8fb9c9}.pin{width:23%;display:inline-block;margin-right:1%}.ok{color:#33ff9a}.no{color:#ffb37d}</style>"
+    "<script>var AC;function bp(){try{AC=AC||new AudioContext();var t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.frequency.setValueAtTime(1500,t);o.frequency.exponentialRampToValueAtTime(600,t+.08);g.gain.setValueAtTime(.15,t);g.gain.exponentialRampToValueAtTime(.0001,t+.1);o.start(t);o.stop(t+.11)}catch(e){}}document.addEventListener('pointerdown',function(e){if(e.target.closest('button,a'))bp()})</script>"
+    "</head><body><h2><span class=emb></span>Amy Box</h2>");
+  if(WiFi.status() == WL_CONNECTED) h += "<a class=big href=/hub>&#9889; OPEN MOTO HUB</a>";
   if(note.length()) h += "<div class=card><b>" + note + "</b></div>";
   h += "<div class=card>Wi-Fi: ";
   if(WiFi.status() == WL_CONNECTED){ h += "<span class=ok>on "; h += esc(ssid); h += " ("; h += WiFi.localIP().toString(); h += ")</span>"; }
@@ -6536,11 +6785,12 @@ String page(const String& note){
   h += ">Colors: way 2</option></select><select name=tf>";
   for(int i = 0; i < 4; i++){ h += "<option value=" + String(i) + (tpFlip == i ? " selected" : "") + ">Touch " + String(i + 1) + "</option>"; }
   h += "</select></div>";
+  h += "<div class=card><b>6. Jetson hub</b> <small>(your Jetson's name or number. Empty = off.)</small><input name=jh value=\"" + esc(hubHost) + "\" autocapitalize=off autocomplete=off><small>Jetson: " + String(hubHost.length() ? (hubOk ? "<span class=ok>connected</span>" : "<span class=no>not found yet</span>") : "off") + "</small><br><b>Moto Hub password</b> <small>(phones and the Jetson need it. Phone page: http://" + WiFi.localIP().toString() + "/hub)</small><input name=lp value=\"" + esc(lpw) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<button>Save and restart</button></form><div class=card><b>Test</b> <small>(you should hear a click or a beep)</small>";
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>AmyRelay 4.7 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>AmyRelay 5.0 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6568,6 +6818,8 @@ void handleSave(){
   for(int i = 0; i < NREL; i++) prefs.putInt((String("p") + String(i + 1)).c_str(), np[i]);
   prefs.putBool("al", web.arg("al") != "0"); prefs.putBool("cc", web.arg("cc") != "0");
   for(int i = 0; i < NREL; i++) if(web.hasArg("n" + String(i + 1))) prefs.putString((String("n") + String(i + 1)).c_str(), cleanName(web.arg("n" + String(i + 1)), i));
+  if(web.hasArg("lp")){ String j = web.arg("lp"); j.trim(); if(j.length() >= 4) prefs.putString("lp", j); }
+  if(web.hasArg("jh")){ String j = web.arg("jh"); j.trim(); prefs.putString("jh", j); }
   if(web.hasArg("vo")){ int v = web.arg("vo").toInt(); prefs.putInt("vo", v < 1 || v > 3 ? 2 : v); }
   if(web.hasArg("sd")){ int v = web.arg("sd").toInt(); prefs.putInt("sd", v == 6 || v == 8 ? v : 0); }
   web.send(200, "text/html", String("<meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:Arial;background:#11151b;color:#eee;padding:20px;font-size:19px'><h2>Saved.</h2>"
@@ -6583,7 +6835,7 @@ void handleTest(){
 }
 void handleCmd(){                                               // same commands on your own network:  /cmd?k=CODE&c=1+on
   web.sendHeader("Access-Control-Allow-Origin", "*");
-  if(!goodCode(code) || web.arg("k") != code){ web.send(403, "text/plain", "wrong code"); return; }
+  if(!((goodCode(code) && web.arg("k") == code) || (lpw.length() && web.arg("k") == lpw))){ web.send(403, "text/plain", "wrong code"); return; }
   doCommand(web.arg("c")); needReport = false;
   web.send(200, "text/plain", stateText());
 }
@@ -6595,13 +6847,14 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 4.7 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("AmyRelay 5.0 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
   for(int i = 0; i < NREL; i++){ pins[i] = prefs.getInt((String("p") + String(i + 1)).c_str(), i == 0 ? 5 : -1); if(!goodPin(pins[i])) pins[i] = -1; }
   activeLow = prefs.getBool("al", true); checkCert = prefs.getBool("cc", true);
   for(int i = 0; i < NREL; i++) nm[i] = cleanName(prefs.getString((String("n") + String(i + 1)).c_str(), ""), i);
+  hubHost = prefs.getString("jh", "moto-desktop.local"); hubHost.trim(); lpw = prefs.getString("lp", "04170417");
   volSet = prefs.getInt("vo", 2); if(volSet < 1 || volSet > 3) volSet = 2;
   spkPin = prefs.getInt("sd", 0); if(spkPin != 6 && spkPin != 8) spkPin = 0;
   board = prefs.getInt("bd", 0); if(board < 0 || board > 2) board = 0;
@@ -6641,6 +6894,8 @@ void setup(){
   web.on("/t", HTTP_POST, handleTest);
   web.on("/cmd", HTTP_GET, handleCmd);
   web.on("/touch", HTTP_GET, handleTouch);
+  web.on("/hub", HTTP_GET, handleHub);
+  web.on("/peers", HTTP_GET, handlePeers);
   web.onNotFound(handleOther);
   if(ssid.length()) startSTA(); else startAP();
   web.begin();
@@ -6649,9 +6904,11 @@ void loop(){
   wifiLoop();
   bzLoop();
   tpLoop();
-  if(lcdOn && !asleep && !gameOn && !musicOn && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
+  if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
   web.handleClient();
   subLoop();
+  hubLoop();
+  peerLoop();
   if(needReport && WiFi.status() == WL_CONNECTED && goodCode(code)){
     needReport = false;
     if(!postState()) Serial.println("  (could not send the answer back)");
