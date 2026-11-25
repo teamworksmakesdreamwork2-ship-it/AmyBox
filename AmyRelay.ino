@@ -1,4 +1,9 @@
-// AMYRELAY_VERSION 5.6   (the build names the files with this number)
+// AMYRELAY_VERSION 5.9   (the build names the files with this number)
+// 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
+// 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
+//      EXIT. Phones join through the Jetson: its phone page talks, types and shows its camera to the boxes (https://<jetson>:8092).
+// 5.7: CALL button (page 3): hold it and talk, let go, and your voice plays on the other Mary boxes. Box to box, two ways at once:
+//      straight by radio (ESP-NOW, no router and no internet needed) and over the Wi-Fi they share. No Jetson needed.
 // 5.6: real Christmas music from internet radio (MUSIC / SONG), plus MP3 songs from the SD card. Web pages: drag a finger to
 //      scroll, the keyboard opens by itself on a typing box, only the changed part of the page is sent, a finger always gets through.
 //      Mary knows the real Wichita weather and the time, tries twice before she gives up. Her key is kept on the Jetson and the SD
@@ -59,6 +64,7 @@
 #else
 #define CYD 0
 #endif
+#include <esp_now.h>
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #include <SD_MMC.h>
 #include <AudioFileSourceFS.h>
@@ -152,6 +158,10 @@ uint8_t *webPx = NULL, *webJpg = NULL;
 String sdSong[60], sdPic[60]; int sdSongN = 0, sdPicN = 0, phCur = 0; volatile int sdCur = 0, sdWant = -1; bool sdOk = false;
 int16_t* muBuf = NULL; volatile uint32_t muH = 0, muT = 0;
 uint16_t *maryBig = NULL, *maryFace = NULL;
+volatile bool callMode = false, callSent = false, callIn = false; bool nowOn = false; volatile uint16_t callId = 0, callTot = 0, callGot = 0; volatile unsigned long callAt = 0; uint16_t callMine = 0;
+uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bool callUdpOn = false;
+#define CALL_PAY 240
+bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = false; char callTxt[208]; uint16_t callSeen[6]; int callSeenK = 0; unsigned long pcAt = 0; WiFiUDP callUdpTxt;
 bool webFull = true, webKb = false, webSkip = false; volatile bool muReal = false; int jpgMode = -1;
 String wxText = ""; unsigned long wxAt = 0;
 #define NRADIO 4
@@ -6459,21 +6469,22 @@ void drawTile(int slot){
   cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);              // the dark slab underneath: the button stands up off the picture
   cvGlass(x, y, 100, 77, 14, tint, isOn ? 195 : 165, 0);
   const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_MORE
-                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_GIRL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK
+                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK
                      : tileBuzz(id) ? IC_BELL : door ? IC_GARAGE : (nameHas(id, "LIGHT") || nameHas(id, "LAMP")) ? IC_LIGHT : IC_PLUG;
   cvSprite(x + 7, y + 6, ic);
   String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String(">>")
-            : id == 12 ? String("GO") : id == 13 ? (WiFi.status() == WL_CONNECTED ? String(wifiBars()) + "/4" : String("--")) : id == 14 ? String("ABC")
+            : id == 12 ? String("GO") : id == 13 ? (WiFi.status() == WL_CONNECTED ? String(wifiBars()) + "/4" : String("--")) : id == 14 ? String("HOLD")
             : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<")
             : !used ? String("--") : door ? String("TAP") : isOn ? String("ON") : String("OFF");
   cvText(x + 100 - 7 - (int)st.length() * FW, y + 10, st.c_str(), 0xFFFF, 1);
   String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("MORE")
-              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("TYPE") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : nm[id];
+              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : nm[id];
   if(name.length() > 8) name = name.substring(0, 8);
   cvText(x + (100 - (int)name.length() * FW) / 2, y + 47, name.c_str(), 0xFFFF, 1);
 }
 void paintScene(){                                                 // paints whatever part of the screen lies in the strip being built
-  if(kbOn){ paintKb(); return; }                                  // the keyboard and the Wi-Fi page fill the whole screen
+  if(kbOn){ paintKb(); return; }
+  if(callOn){ paintCall(); return; }                                  // the keyboard and the Wi-Fi page fill the whole screen
   if(wfOn){ paintWf(); return; }
   String net = apUp ? "SETUP" : (WiFi.status() != WL_CONNECTED ? "NO NET" : ((subOk && httpCode == 200) ? "READY" : "ONLINE"));
   cvGlass(0, 0, LCD_W, 30, 0, rgb(6, 14, 40), 150, 0);
@@ -6516,8 +6527,9 @@ void lcdDraw(bool force){
   bool msgOn = msgUntil && (long)(msgUntil - millis()) > 0;
   String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet) + "|" + String(wifiBars()) + wifiWhy() + String(WiFi.status() == WL_CONNECTED ? 0 : (int)((millis() / 3000) & 1));
   if(camOn) return;                                               // the drain picture is on the screen
-  if((webOn || phOn) && !kbOn) return;                            // a web page or a photo is on the screen
+  if((webOn || phOn || pcOn) && !kbOn) return;                            // a web page or a photo is on the screen
   if(kbOn) key += "|k" + String(kbFor) + String(kbShift ? 1 : 0) + String(kbSym ? 1 : 0) + kbText;
+  if(callOn) key += "|c" + callMsg + String(aiState) + String(callMode ? 1 : 0) + WiFi.gatewayIP().toString();
   if(wfOn){ key += "|w" + String(wfN) + WiFi.localIP().toString(); for(int i = 0; i < wfN && i < 5; i++) key += wfName[i] + String(barsOf(wfRs[i])); }
   key += "|d" + String(drainWet) + String(drainTile(2) ? 1 : 0);
   key += "|m" + String(aiState) + String(vPlay ? (int)((millis() / 180) & 1) : 2);
@@ -6720,7 +6732,7 @@ void tileTap(int slot){                                            // a finger o
   if(id == 17){ pgNo = 0; return; }
   if(id == 12){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; return; }
   if(id == 13){ wfOn = true; wfN = -1; return; }                 // -1: look for Wi-Fi right after the screen says so
-  if(id == 14){ if(!gKey.length()){ showMsg("MARY NEEDS THE KEY"); return; } kbOpen(3, ""); return; }
+  if(id == 14){ callOn = true; return; }                          // the CALL page: talk, type, camera
   if(id == 15){ if(!sdPicN){ showMsg("NO PHOTOS ON SD CARD"); return; } phOn = true; phAt = 0; return; }
   if(id == 16){ if(!gKey.length() && !hubHost.length()){ showMsg("MARY NEEDS THE KEY"); return; } jetOn = true; ansPg = 0; hubAt = 0; return; }
   if(id == 6){ gameStart(true); return; }
@@ -6814,7 +6826,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 5.6. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 5.9. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 void tpLoop(){
@@ -6830,9 +6842,10 @@ void tpLoop(){
     if(asleep){ lcdSleep(false); tpDown = true; return; }         // the first touch only wakes the screen
     if(camOn){ camOn = false; lastTouch = now; fxNote(600, 60); lcdDraw(true); tpDown = true; return; }      // a tap on the drain picture goes back
     lastTouch = now;
-    if((webOn || phOn) && !kbOn){ if(webOn) webTouch(x, y); else phTouch(x, y); if(!webOn && !phOn){ lcdShown = ""; lcdDraw(true); } tpDown = true; return; }
+    if((phOn || pcOn) && !kbOn){ if(pcOn){ pcOn = false; fxNote(600, 60); } else phTouch(x, y); if(!phOn && !pcOn){ lcdShown = ""; lcdDraw(true); } tpDown = true; return; }
     if(kbOn) kbTouch(x, y);
     else if(wfOn) wfTouch(x, y);
+    else if(callOn) callTouch(x, y);
     else if(gameOn){
       if((x > 215 && y < 40) || (x >= 256 && y >= 140 && y < 204)){ gameOn = false; fxNote(600, 60); }
       else if(gWin) gameStart(false);
@@ -6983,7 +6996,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>Mary&#39;s Magic Box 5.6 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>Mary&#39;s Magic Box 5.9 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -7047,7 +7060,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("Mary's Magic Box 5.6 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("Mary's Magic Box 5.9 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", "");
@@ -7252,6 +7265,7 @@ void aiTask(void* arg){
         }
       }
       aiRec = false;
+      if(callMode){ if(recN >= 4800) callSend(); callMode = false; aiState = 0; continue; }      // CALL: off to the other boxes
       if(recN < 6400){ aiText = "Hold the TALK button the whole time you speak."; vN = 0; aiState = 3; continue; }      // under 0.4 seconds
       aiState = 2;
     }
@@ -7350,6 +7364,7 @@ void kbClose(bool go){
     ssid = wfPick; pass = kbText; prefs.putString("ssid", ssid); prefs.putString("pass", pass);
     wfOn = false; showMsg(String("JOINING ") + ssid); lcdDraw(true); startSTA();
   }
+  else if(kbFor == 5 && t.length()){ callText(t); showMsg("MESSAGE SENT"); }      // a written message to the other boxes and phones
   else if(kbFor == 3 && t.length()){                               // ask Mary in writing
     if(!gKey.length()){ showMsg("MARY NEEDS THE KEY"); return; }
     jetOn = true; ansPg = 0; vPlay = false; aiAskText(t.c_str());
@@ -7360,9 +7375,9 @@ void kbKey(int x, int y, int w, const char* lb, uint16_t col){
   cvText(x + (w - (int)strlen(lb) * FW) / 2, y + 9, lb, 0xFFFF, 1);
 }
 void paintKb(){
-  static const char* const TT[5] = {"", "WEB ADDRESS OR SEARCH", "WI-FI PASSWORD", "ASK MARY ANYTHING", "TYPE ON THE PAGE"};
+  static const char* const TT[6] = {"", "WEB ADDRESS OR SEARCH", "WI-FI PASSWORD", "ASK MARY ANYTHING", "TYPE ON THE PAGE", "MESSAGE TO THE BOXES"};
   cvGlass(0, 0, LCD_W, 34, 0, rgb(6, 14, 40), 210, 0);
-  if(!kbText.length()) cvText(6, 5, TT[kbFor >= 0 && kbFor <= 4 ? kbFor : 0], rgb(150, 165, 200), 1);
+  if(!kbText.length()) cvText(6, 5, TT[kbFor >= 0 && kbFor <= 5 ? kbFor : 0], rgb(150, 165, 200), 1);
   else { String t = kbText; if(t.length() > 22) t = t.substring(t.length() - 22); t += "_"; cvText(6, 5, t.c_str(), 0xFFFF, 1); }
   cvGlass(284, 2, 34, 30, 8, rgb(225, 50, 60), 220, 0); cvText(295, 5, "X", 0xFFFF, 1);
   for(int r = 0; r < 4; r++){
@@ -7379,7 +7394,7 @@ void paintKb(){
     kbKey(64, y, 64, kbSym ? "ABC" : "?123", rgb(60, 100, 170));
     kbKey(128, y, 96, "SPACE", rgb(30, 60, 125));
     kbKey(224, y, 48, "DEL", rgb(200, 110, 30));
-    kbKey(272, y, 48, kbFor == 3 ? "ASK" : kbFor == 2 ? "OK" : "GO", rgb(30, 160, 80));
+    kbKey(272, y, 48, kbFor == 3 ? "ASK" : kbFor == 2 ? "OK" : kbFor == 5 ? "SEND" : "GO", rgb(30, 160, 80));
   }
 }
 void kbTouch(int x, int y){
@@ -7508,7 +7523,7 @@ int webFetch(const String& path){                               // 1 = drew it, 
   if(WiFi.status() != WL_CONNECTED) return 0;
   if(!webJpg) webJpg = (uint8_t*)ps_malloc(WEBJ);
   if(!webJpg) return 0;
-  bool idle = path.startsWith("/shot");
+  bool idle = path.startsWith("/shot") || path.startsWith("/cam");
   uint32_t cand[3]; int nc = 0;
   if((uint32_t)webIp) cand[nc++] = (uint32_t)webIp;
   uint32_t g = (uint32_t)WiFi.gatewayIP(); if(g && g != (uint32_t)webIp) cand[nc++] = g;      // on Doctor Magic the Jetson IS the gateway
@@ -7665,8 +7680,8 @@ void sdKeySave(const String& k){
 #endif
 }
 // ---- real music: internet radio stations and MP3 songs from the SD card (black box: SD card slot on pins 38 40 39)
-static const char* const RADIO_NAME[NRADIO] = {"CHRISTMAS HITS", "CHRISTMAS LOUNGE", "STORE CHRISTMAS", "JOLLY SOUL"};
-static const char* const RADIO_URL[NRADIO] = {"http://listen.181fm.com/181-xblender_128k.mp3", "http://ice1.somafm.com/christmas-128-mp3", "http://ice1.somafm.com/deptstore-128-mp3", "http://ice1.somafm.com/jollysoul-128-mp3"};
+static const char* const RADIO_NAME[NRADIO] = {"CHRISTMAS GOSPEL", "CHRISTMAS CLASSICS", "CHRISTIAN RADIO", "CHRISTMAS HITS"};
+static const char* const RADIO_URL[NRADIO] = {"http://listen.181fm.com/181-xgospel_128k.mp3", "http://listen.181fm.com/181-xtraditional_128k.mp3", "http://emf.streamguys1.com/sk001_mp3_low_web", "http://listen.181fm.com/181-xblender_128k.mp3"};
 String songName(int k){
   if(k < 0) return String("MUSIC ON");
   if(k >= sdSongN) return String(RADIO_NAME[(k - sdSongN) % NRADIO]);
@@ -7788,11 +7803,160 @@ void aiShow(){
 }
 
 
+// ============================================================ 5.7 CALL: box to box voice (hold, talk, let go)
+uint8_t muEnc(int v){                                             // sound squeezed into one byte (the telephone way)
+  int sign = v < 0 ? 0x80 : 0; if(v < 0) v = -v; if(v > 32635) v = 32635; v += 0x84;
+  int ex = 7; for(int m = 0x4000; (v & m) == 0 && ex > 0; ex--, m >>= 1){}
+  return (uint8_t)(~(sign | (ex << 4) | ((v >> (ex + 3)) & 0x0F)));
+}
+int muDec(uint8_t u){ u = (uint8_t)~u; int ex = (u >> 4) & 7, v = (((u & 0x0F) << 3) + 0x84) << ex; v -= 0x84; return (u & 0x80) ? -v : v; }
+void callPut(const uint8_t* d, int len){                          // one piece of a call came in (by radio or by Wi-Fi)
+  if(len >= 5 && d[0] == 'M' && d[1] == 'X'){                     // a written message
+    uint16_t id = (uint16_t)(d[2] | (d[3] << 8));
+    for(int i = 0; i < 6; i++) if(callSeen[i] == id) return;      // had this one already (it comes several times, and by two roads)
+    callSeen[callSeenK] = id; callSeenK = (callSeenK + 1) % 6;
+    int n = len - 4; if(n > 200) n = 200;
+    memcpy(callTxt, d + 4, n); callTxt[n] = 0; callNew = true;
+    return;
+  }
+  if(len < 9 || d[0] != 'M' || d[1] != 'C' || !callBuf) return;
+  uint16_t id = (uint16_t)(d[2] | (d[3] << 8)), seq = (uint16_t)(d[4] | (d[5] << 8)), tot = (uint16_t)(d[6] | (d[7] << 8));
+  int n = len - 8;
+  if(id == callMine || tot < 1 || tot > 300 || seq >= tot || n > CALL_PAY) return;
+  if(id != callId || !callIn){ if(callIn && id != callId && callGot > 0 && millis() - callAt < 400) return; callId = id; callTot = tot; callGot = 0; memset(callMap, 0, sizeof(callMap)); memset(callBuf, 0xFF, 300 * CALL_PAY); callIn = true; }
+  if(!callMap[seq]){ callMap[seq] = 1; memcpy(callBuf + (size_t)seq * CALL_PAY, d + 8, n); callGot++; }
+  callAt = millis();
+}
+void callNowRx(const uint8_t* mac, const uint8_t* data, int len){ callPut(data, len); }
+void callStart(){                                                 // the radio that needs no router
+  if(nowOn || WiFi.getMode() == WIFI_OFF) return;
+  if(esp_now_init() != ESP_OK) return;
+  esp_now_register_recv_cb(callNowRx);
+  esp_now_peer_info_t pi; memset(&pi, 0, sizeof(pi)); memset(pi.peer_addr, 0xFF, 6); pi.channel = 0; pi.encrypt = false;
+  pi.ifidx = (WiFi.getMode() == WIFI_AP) ? WIFI_IF_AP : WIFI_IF_STA;
+  esp_now_add_peer(&pi);
+  nowOn = true;
+}
+void callSend(){                                                  // the recording goes out twice: by radio and over the Wi-Fi the boxes share
+  int16_t* use = recL; long eL = 0, eR = 0; for(int i = 0; i < recN; i += 4){ eL += abs(recL[i]); eR += abs(recR[i]); } if(eR > eL) use = recR;
+  int n8 = recN / 2; if(n8 > 300 * CALL_PAY) n8 = 300 * CALL_PAY;
+  int tot = (n8 + CALL_PAY - 1) / CALL_PAY; if(tot < 1) return;
+  callMine = (uint16_t)(esp_random() | 1);
+  static const uint8_t BC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  bool wifi = WiFi.status() == WL_CONNECTED;
+  uint8_t pk[8 + CALL_PAY];
+  for(int rounds = 0; rounds < 2; rounds++){                      // twice: a lost piece gets a second chance
+    for(int q = 0; q < tot; q++){
+      pk[0] = 'M'; pk[1] = 'C'; pk[2] = callMine & 255; pk[3] = callMine >> 8; pk[4] = q & 255; pk[5] = q >> 8; pk[6] = tot & 255; pk[7] = tot >> 8;
+      int n = n8 - q * CALL_PAY; if(n > CALL_PAY) n = CALL_PAY;
+      for(int i = 0; i < n; i++){ int k = (q * CALL_PAY + i) * 2; pk[8 + i] = muEnc(((int)use[k] + (int)use[k + 1]) / 2); }
+      if(nowOn) esp_now_send(BC, pk, 8 + n);
+      if(wifi){ callUdpOut.beginPacket(IPAddress(255, 255, 255, 255), 4211); callUdpOut.write(pk, 8 + n); callUdpOut.endPacket(); }
+      delay(4);
+    }
+  }
+  callSent = true;
+}
+void callText(const String& t){                                  // a written message: out by radio and over the Wi-Fi, three times
+  uint8_t pk[4 + 200]; uint16_t id = (uint16_t)(esp_random() | 1);
+  callSeen[callSeenK] = id; callSeenK = (callSeenK + 1) % 6;      // my own: not shown back to me
+  int n = t.length(); if(n > 200) n = 200;
+  pk[0] = 'M'; pk[1] = 'X'; pk[2] = id & 255; pk[3] = id >> 8; memcpy(pk + 4, t.c_str(), n);
+  static const uint8_t BC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  for(int r = 0; r < 3; r++){
+    if(nowOn) esp_now_send(BC, pk, 4 + n);
+    if(WiFi.status() == WL_CONNECTED){ callUdpTxt.beginPacket(IPAddress(255, 255, 255, 255), 4211); callUdpTxt.write(pk, 4 + n); callUdpTxt.endPacket(); }
+    delay(15);
+  }
+}
+void paintCall(){
+  cvGlass(0, 0, LCD_W, 30, 0, rgb(6, 14, 40), 190, 0);
+  cvText(8, 3, "CALL", rgb(255, 220, 90), 1);
+  String st = (callMode && aiState == 1) ? String("TALKING...") : (msgUntil && (long)(msgUntil - millis()) > 0) ? msgText : String("READY");
+  if(st.length() > 20) st = st.substring(0, 20);
+  cvText(LCD_W - 6 - (int)st.length() * FW, 3, st.c_str(), rgb(140, 255, 170), 1);
+  cvGlass(4, 33, LCD_W - 8, 106, 12, rgb(14, 34, 84), 170, 0);
+  if(callMsg.length()){
+    cvText(14, 38, "MESSAGE:", rgb(255, 230, 120), 1);
+    String m = callMsg; int y = 63;
+    while(m.length() && y <= 113){                                // three lines, cut at a space when there is one
+      int cut = m.length() > 24 ? 24 : m.length();
+      if(m.length() > 24){ int sp = m.lastIndexOf(' ', 24); if(sp > 8) cut = sp; }
+      cvText(14, y, m.substring(0, cut).c_str(), 0xFFFF, 1);
+      m = m.substring(cut); m.trim(); y += 25;
+    }
+  } else {
+    cvText(14, 38, "HOLD TALK and speak.", rgb(255, 230, 120), 1);
+    cvText(14, 63, "TYPE sends words.", rgb(200, 210, 230), 1);
+    cvText(14, 88, "Phone page (Jetson):", rgb(200, 210, 230), 1);
+    String a = WiFi.status() == WL_CONNECTED ? String("https://") + WiFi.gatewayIP().toString() + ":8092" : String("needs Wi-Fi");
+    cvText(14, 113, a.c_str(), 0xFFFF, 1);
+  }
+  static const char* const CB[4] = {"TALK", "TYPE", "CAM", "EXIT"};
+  for(int b = 0; b < 4; b++){
+    uint16_t col = b == 0 ? ((callMode && aiState == 1) ? rgb(255, 170, 30) : rgb(230, 80, 150)) : b == 1 ? rgb(30, 120, 210) : b == 2 ? rgb(20, 150, 90) : rgb(225, 50, 60);
+    int x = 4 + b * 79;
+    cvGlass(x + 2, 151, 74, 47, 10, 0x0000, 140, 1); cvGlass(x, 146, 74, 47, 10, col, 190, 0);
+    cvText(x + (74 - (int)strlen(CB[b]) * FW) / 2, 158, CB[b], 0xFFFF, 1);
+  }
+  cvText(8, 210, "Hold TALK the whole time.", rgb(200, 210, 230), 1);
+}
+void callTouch(int x, int y){
+  fxNote(1500, 30);
+  if(y >= 140 && y < 204){
+    int b = x / 80; if(b > 3) b = 3;
+    if(b == 0){ if(!recL || !micOk){ showMsg("NO MICROPHONE"); return; } if(aiState == 0){ vPlay = false; callMode = true; recN = 0; aiRec = true; aiState = 1; } }      // hold and talk
+    else if(b == 1) kbOpen(5, "");
+    else if(b == 2){ pcOn = true; pcAt = 0; }
+    else callOn = false;
+  }
+  else if(y >= 33 && y < 140) callMsg = "";                        // a tap on the message puts it away
+}
+void pcLoop(){                                                    // the picture from a phone's camera (the phone page on the Jetson sends it)
+  if(!pcOn || kbOn) return;
+  if(millis() - lastTouch > 600000UL){ pcOn = false; lcdShown = ""; lcdDraw(true); return; }
+  if(pcAt && millis() - pcAt < 2000UL) return;
+  bool first = !pcAt;
+  pcAt = millis(); if(!pcAt) pcAt = 1;
+  if(first){ lcdFill(0, 0, LCD_W, LCD_H, 0x0000); lcdFill(0, 0, LCD_W, 24, rgb(225, 50, 60)); lcdText(8, 0, "< BACK   PHONE CAMERA", 0xFFFF, rgb(225, 50, 60), 1); webFull = true; }
+  int r = webFetch(String("/cam"));
+  if(r == 3){ pcOn = false; lcdShown = ""; lcdDraw(true); return; }
+  if((r == 0 || r == 2) && first){
+    lcdText(10, 80, "NO CAMERA PICTURE YET", 0xFFFF, 0x0000, 1);
+    lcdText(10, 115, "On the phone page tap", rgb(200, 210, 230), 0x0000, 1);
+    lcdText(10, 143, "CAMERA.", rgb(200, 210, 230), 0x0000, 1);
+  }
+}
+void callLoop(){
+  if(!vBuf) return;                                               // a board without the big memory: no calls
+  if(!callBuf) callBuf = (uint8_t*)ps_malloc(300 * CALL_PAY);
+  callStart();
+  if(WiFi.status() == WL_CONNECTED){ if(!callUdpOn){ callUdpOn = callUdpIn.begin(4211) == 1; } }
+  else if(callUdpOn){ callUdpIn.stop(); callUdpOn = false; }
+  if(callUdpOn){ int n; uint8_t b[8 + CALL_PAY + 4]; int guard = 0; while((n = callUdpIn.parsePacket()) > 0 && guard++ < 40){ int g = callUdpIn.read(b, sizeof(b)); if(g > 0) callPut(b, g); } }
+  if(callSent){ callSent = false; showMsg("SENT"); fxNote(1200, 80); }
+  if(callNew){                                                    // a written message came in: show it on the CALL page
+    callNew = false; callMsg = String(callTxt);
+    lastTouch = millis(); if(asleep) lcdSleep(false);
+    if(!kbOn && !webOn && !pcOn && !phOn){ callOn = true; jetOn = false; wfOn = false; lcdShown = ""; }
+    else showMsg("NEW MESSAGE - OPEN CALL");
+    fxNote(988, 120); fxNote(1319, 160);
+  }
+  if(callIn && callGot > 0 && (callGot >= callTot || millis() - callAt > 600) && aiState == 0 && !vPlay){      // all here (or the rest is lost): play it
+    int n8 = callTot * CALL_PAY; if(n8 > 16000 * 20) n8 = 16000 * 20;
+    for(int i = 0; i < n8; i++){ int v = muDec(callBuf[i]) * 2; if(v > 32000) v = 32000; if(v < -32000) v = -32000; vBuf[2 * i] = (int16_t)v; vBuf[2 * i + 1] = (int16_t)v; }
+    callIn = false; callGot = 0;
+    vN = n8 * 2; vPos = 0; vPlay = true;
+    lastTouch = millis(); if(asleep) lcdSleep(false);
+    showMsg("VOICE CALL");
+  }
+}
+
 void loop(){
   wifiLoop();
   bzLoop();
   tpLoop();
-  if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && !camOn && !kbOn && !webOn && !wfOn && !phOn && drainWet != 1 && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
+  if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && !camOn && !kbOn && !webOn && !wfOn && !phOn && !pcOn && drainWet != 1 && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
   web.handleClient();
   subLoop();
   hubLoop();
@@ -7800,8 +7964,10 @@ void loop(){
   drainLoop();
   webLoop();
   phLoop();
+  pcLoop();
   keySync();
   drainRelay();
+  callLoop();
   if(wfOn && wfN < 0 && !kbOn){                                   // the Wi-Fi page: look for Wi-Fi
     if(apUp) WiFi.mode(WIFI_AP_STA);
     else if(WiFi.status() != WL_CONNECTED){ WiFi.disconnect(); delay(200); wifiLostAt = millis(); }      // a try that keeps failing blocks the listening: stop it first
