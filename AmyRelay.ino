@@ -1,4 +1,9 @@
-// AMYRELAY_VERSION 5.0   (the build names the files with this number)
+// AMYRELAY_VERSION 5.1   (the build names the files with this number)
+// Mary Box: on this box the helper is called Mary (was Amy) on the screen and pages.
+// 5.1 (for Mr. Terry's garage): the DRAIN button shows the AC drain pan from the Moto Drain Watch board
+//     (green DRY / red WATER). Tap it: the drain camera picture fills the screen (tap again to go back).
+//     Water in the pan: the screen wakes, turns red, and the box sounds an alarm every 30 seconds.
+//     The Amy AI page only opens when a Jetson is set on the setup page.
 /*  AmyRelay 4  -  a Wi-Fi switch box for the Amy AI phone app.      (c) Moto Takeda 316-304-5398
     Board: ESP32-S3 (a plain ESP32 works too).  Needs only the ESP32 board package - no extra libraries.
 
@@ -28,6 +33,7 @@
 #include <WiFiUdp.h>
 #include <driver/i2s.h>
 #include <math.h>
+#include "img_converters.h"
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CYD_TEST)
 #include <driver/dac.h>
 #include <driver/rtc_io.h>
@@ -39,7 +45,7 @@
 #define NREL 4
 #define BOOT_PIN 0
 static const char HOST[] = "ntfy.sh";
-static const char AP_NAME[] = "Amy-Box-Setup";
+static const char AP_NAME[] = "Mary-Box-Setup";
 // The two root certificates of Let's Encrypt (ISRG Root X1 and X2). With them the box knows it is really talking to ntfy.sh.
 static const char ROOTS[] =
   "-----BEGIN CERTIFICATE-----\n"
@@ -95,6 +101,7 @@ WiFiClientSecure sub;                       // the line that stays open: Amy's c
 
 String ssid, pass, code, wifiList, line, reportTag;
 int pins[NREL] = {5, -1, -1, -1};
+String drainIp = ""; int drainWet = -1; unsigned long drainSeen = 0, drainAlarmAt = 0, camAt = 0, camOpened = 0; bool camOn = false;
 int bzPin = 4, board = 0;                   // buzzer pin (-1 = no buzzer).   board: 0 = plain ESP32-S3, no screen    1 = red MaTouch with the 2.8 inch screen
 bool bzFlip = false, bzClick = true, bzAlarm = false, saidReady = false, lcdOn = false;
 int bzLeft = 0; unsigned int bzMs = 90, bzGap = 110; unsigned long bzNext = 0, bzIdleAt = 0, lcdAt = 0;
@@ -241,12 +248,12 @@ void handleLine(const String& l){
     if(httpCode != 200){                                        // 429 = too many calls: wait longer before calling again
       Serial.print("  the message service said "); Serial.println(httpCode);
       sub.stop(); subOk = false; lastTry = millis(); retryMs = (httpCode == 429) ? 120000UL : 30000UL;
-    } else { Serial.println("  connected. Waiting for Amy."); retryMs = 3000; if(!saidReady){ saidReady = true; beep(2, 60, 80); } }      // two quick beeps: ready for Amy
+    } else { Serial.println("  connected. Waiting for Mary."); retryMs = 3000; if(!saidReady){ saidReady = true; beep(2, 60, 80); } }      // two quick beeps: ready for Amy
     return;
   }
   if(l.indexOf("\"event\":\"message\"") < 0) return;           // "open" and "keepalive" lines: nothing to do
   String m = jsonField(l, "message");
-  if(m.length()){ Serial.print("Amy says: "); Serial.println(m); doCommand(m); }
+  if(m.length()){ Serial.print("Mary says: "); Serial.println(m); doCommand(m); }
 }
 void subLoop(){
   if(WiFi.status() != WL_CONNECTED || !goodCode(code)){ if(subOk){ sub.stop(); subOk = false; } return; }
@@ -6273,12 +6280,12 @@ void jetTap(int i){
   if(i >= 0 && i < 3){ hubAns = ""; ansPg = 0; hubAsk(JQ[i]); }
 }
 void paintJet(){
-  cvText(8, 3, "AMY AI", rgb(255, 220, 90), 1);
+  cvText(8, 3, "MARY AI", rgb(255, 220, 90), 1);
   String st = !hubHost.length() ? String("NO JETSON SET") : hubOk ? String("JETSON OK") : String("NO JETSON");
   cvText(LCD_W - 6 - (int)st.length() * FW, 3, st.c_str(), hubOk ? rgb(140, 255, 170) : rgb(255, 150, 150), 1);
   cvGlass(4, 33, LCD_W - 8, 106, 12, rgb(14, 34, 84), 170, 0);
   String L[24]; int n = ansLines(L, 24);
-  if(!n) cvText(14, 38, hubWait ? "Amy is thinking..." : "Tap a button to ask Amy", rgb(200, 210, 230), 1);
+  if(!n) cvText(14, 38, hubWait ? "Mary is thinking..." : "Tap a button to ask Mary", rgb(200, 210, 230), 1);
   for(int k = 0; k < 4; k++){ int j = ansPg * 4 + k; if(j < n) cvText(10, 37 + k * 25, L[j].c_str(), 0xFFFF, 1); }
   for(int i = 0; i < 5; i++){
     int x = 2 + i * 63;
@@ -6293,8 +6300,20 @@ bool isDoor(int i){ return i < NREL && (nameHas(i, "GARAGE") || nameHas(i, "DOOR
 bool tileBuzz(int i){ return i == NREL - 1 && buzzIs4(); }
 bool tileUsed(int id){ return true; }
 bool tileOn(int id){ return id == 4 ? (bool)musicOn : (id < NREL ? (tileBuzz(id) ? bzAlarm : on[id]) : false); }
+bool drainTile(int id){ return id == 2 && pins[2] < 0 && drainIp.length() && millis() - drainSeen < 120000UL; }
 void drawTile(int slot){
   int id = pgNo * 6 + slot, x = 5 + (slot % 3) * 105, y = 33 + (slot / 3) * 85;
+  if(drainTile(id)){
+    if(y + 84 <= cvY0 || y >= cvY0 + cvHh) return;
+    bool wet = drainWet == 1;
+    cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);
+    cvGlass(x, y, 100, 77, 14, wet ? rgb(230, 30, 40) : rgb(30, 170, 80), wet ? 215 : 185, 0);
+    cvSprite(x + 7, y + 6, IC_CAM);
+    const char* st = wet ? "WET" : "DRY";
+    cvText(x + 100 - 7 - (int)strlen(st) * FW, y + 10, st, 0xFFFF, 1);
+    cvText(x + (100 - 5 * FW) / 2, y + 47, "DRAIN", 0xFFFF, 1);
+    return;
+  }
   if(y + 84 <= cvY0 || y >= cvY0 + cvHh) return;
   bool used = tileUsed(id), isOn = tileOn(id), door = id < NREL && isDoor(id);
   uint16_t tint = !used ? rgb(70, 78, 92) : isOn ? rgb(255, 196, 40) : door ? rgb(40, 120, 240) : id == 4 ? rgb(150, 70, 220) : id == 6 ? rgb(20, 170, 150) : id == 7 ? rgb(50, 50, 130)
@@ -6330,7 +6349,7 @@ void paintScene(){                                                 // paints wha
     foot = gWin == 0 ? String("YOUR TURN") : gWin == 1 ? String("YOU WIN! TAP TO PLAY") : gWin == 2 ? String("I WIN! TAP TO PLAY") : String("TIE! TAP TO PLAY");
   } else if(jetOn){
     paintJet();
-    foot = hubWait ? String("AMY IS THINKING...") : hubPhone.length() ? (hubPhone.length() <= 15 ? String("PHONE ") + hubPhone : hubPhone) : hubInfo.length() ? hubInfo : String("TAP EXIT TO GO BACK");
+    foot = hubWait ? String("MARY IS THINKING...") : hubPhone.length() ? (hubPhone.length() <= 15 ? String("PHONE ") + hubPhone : hubPhone) : hubInfo.length() ? hubInfo : String("TAP EXIT TO GO BACK");
   } else {
     cvText(8, 3, "LET THERE BE LIGHT", 0xFFFF, 1);
     cvText(LCD_W - 6 - (int)net.length() * FW, 3, net.c_str(), net == "READY" ? rgb(140, 255, 170) : rgb(255, 214, 90), 1);
@@ -6348,6 +6367,8 @@ void lcdDraw(bool force){
   if(!lcdOn) return;
   bool msgOn = msgUntil && (long)(msgUntil - millis()) > 0;
   String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet);
+  if(camOn) return;                                               // the drain picture is on the screen
+  key += "|d" + String(drainWet) + String(drainTile(2) ? 1 : 0);
   if(jetOn){ key += "|j" + String(hubOk) + String(hubWait) + String(ansPg) + hubAns + hubInfo + hubPhone; }
   if(gameOn){ key += "|g"; for(int i = 0; i < 9; i++) key += String((int)gb[i]); key += String(gWin); }
   if(!force && key == lcdShown) return;
@@ -6369,6 +6390,7 @@ struct Peer { String ip, n, s, m; unsigned long seen; };
 String nmList(){ String o; for(int i = 0; i < NREL; i++){ if(i) o += ','; o += nm[i]; } return o; }
 Peer peers[12]; int nPeers = 0;
 void peerPut(const String& ip, const String& n, const String& st, const String& mm = ""){
+  if(n == "Drain pan"){ drainIp = ip; int w = st == "WET" ? 1 : 0; if(w && drainWet != 1) drainAlarmAt = 0; drainWet = w; drainSeen = millis(); }
   int k = -1; for(int i = 0; i < nPeers; i++) if(peers[i].ip == ip) k = i;
   if(k < 0){ if(nPeers < 12) k = nPeers++; else { k = 0; for(int i = 1; i < nPeers; i++) if(peers[i].seen < peers[k].seen) k = i; } }
   peers[k].ip = ip; peers[k].n = n.substring(0, 24); peers[k].s = st.substring(0, 40); peers[k].m = mm.substring(0, 40); peers[k].seen = millis();
@@ -6464,15 +6486,15 @@ nav .k{padding:10px 0 8px;font-size:12px}nav .k b{display:block;font-size:22px;m
 <div class=top><div class=emb><b>M</b></div><div><div class=tt>Moto Hub</div><div class=st id=st>Linking...</div></div><div class=lock><i id=dot></i>Secure</div></div>
 <div class="tab on" id=t0><div class=pan><h2>Switches</h2><div id=boxes><div class=em>Looking for boxes...</div></div>
 <div class=em style="margin-top:12px">Hold a button 1 second to rename it. A name with DOOR or GARAGE gives one short press.</div></div></div>
-<div class=tab id=t1><div class=pan><h2>Amy Core</h2>
+<div class=tab id=t1><div class=pan><h2>Mary Core</h2>
 <div class=core><div class=orb id=orb><div class=r></div><div class="r r2"></div><div class=c></div></div><div class=say id=ans>...</div></div>
-<div class=row><input id=q placeholder="Command Amy..." onkeydown="if(event.key=='Enter')ask()"><button class="k c" onclick=ask()>Send</button></div>
+<div class=row><input id=q placeholder="Command Mary..." onkeydown="if(event.key=='Enter')ask()"><button class="k c" onclick=ask()>Send</button></div>
 <div class=row><button class="k r" style=flex:1 onclick=stopAll()>&#9632; Stop</button><button class=k style=flex:1 onclick=jopen(0)>&#128640; Full cockpit</button></div></div></div>
 <div class=tab id=t2><div class=pan><h2>Security cams</h2><div class=cams id=cams><div class=em>The cameras come through the Jetson.</div></div>
 <div class=row><button class="k c" style=flex:1 onclick=jopen(2)>&#128247; Share a camera</button></div></div></div>
 <div class=ft>&copy; Moto Takeda 316-304-5398 &middot; works with or without the Jetson</div>
 </div>
-<nav><button class="k c" onclick=tab(0)><b>&#9211;</b>Switches</button><button class=k onclick=tab(1)><b>&#9673;</b>Amy</button><button class=k onclick=tab(2)><b>&#9678;</b>Cams</button></nav>
+<nav><button class="k c" onclick=tab(0)><b>&#9211;</b>Switches</button><button class=k onclick=tab(1)><b>&#9673;</b>Mary</button><button class=k onclick=tab(2)><b>&#9678;</b>Cams</button></nav>
 <script>
 var K='',J='',last='',AC=null;try{K=localStorage.getItem('mk')||''}catch(e){}
 function $(i){return document.getElementById(i)}function esc(s){return String(s).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')}
@@ -6539,6 +6561,7 @@ void gTap(int cell){
 void tileTap(int slot){                                            // a finger on a button
   int id = pgNo * 6 + slot;
   fxNote(1500, 30);
+  if(drainTile(id)){ camOn = true; camAt = 0; camOpened = millis(); return; }
   if(id == 4){ musicOn = !musicOn; sayClip(musicOn ? 7 : 8); showMsg(musicOn ? "MUSIC ON" : "MUSIC OFF"); return; }
   if(id == 5){ pgNo = 1; return; }
   if(id == 11){ pgNo = 0; return; }
@@ -6631,7 +6654,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>AmyRelay 5.0. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary Box 5.1. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 void tpLoop(){
@@ -6644,6 +6667,7 @@ void tpLoop(){
   if(down && !tpDown && now - tpAt > (gameOn ? 160UL : 280UL)){
     tpAt = now; tpTaps++;
     if(asleep){ lcdSleep(false); tpDown = true; return; }         // the first touch only wakes the screen
+    if(camOn){ camOn = false; lastTouch = now; fxNote(600, 60); lcdDraw(true); tpDown = true; return; }      // a tap on the drain picture goes back
     lastTouch = now;
     if(gameOn){
       if((x > 215 && y < 40) || (x >= 256 && y >= 140 && y < 204)){ gameOn = false; fxNote(600, 60); }
@@ -6651,7 +6675,7 @@ void tpLoop(){
       else if(x >= 67 && x < 256 && y >= 34 && y < 202) gTap((x - 67) / 63 + ((y - 34) / 56) * 3);
     }
     else if(jetOn){ if(y >= 140 && y < 204){ int i = x / 64; if(i > 4) i = 4; jetTap(i); } }
-    else if(y >= 204 && x < 60){ jetOn = true; ansPg = 0; hubAt = 0; fxNote(1500, 30); }      // Amy's face at the bottom: the Amy AI page
+    else if(y >= 204 && x < 60 && hubHost.length()){ jetOn = true; ansPg = 0; hubAt = 0; fxNote(1500, 30); }      // Amy's face at the bottom: the Amy AI page
     else if(y >= 31 && y < 203){ int i = (x < 108 ? 0 : (x < 213 ? 1 : 2)) + (y < 117 ? 0 : 3); tileTap(i); }
     lcdDraw(false);
   }
@@ -6730,18 +6754,18 @@ String page(const String& note){
     ".big{display:block;text-align:center;text-decoration:none;padding:18px;font-size:20px;font-weight:900;letter-spacing:3px;color:#2a1600;border-radius:12px;background:linear-gradient(180deg,#ffd35a,#e29400 55%,#9a5c00);box-shadow:0 6px 0 #4a2a00,0 0 30px #ffb21e88}"
     "small{color:#8fb9c9}.pin{width:23%;display:inline-block;margin-right:1%}.ok{color:#33ff9a}.no{color:#ffb37d}</style>"
     "<script>var AC;function bp(){try{AC=AC||new AudioContext();var t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.frequency.setValueAtTime(1500,t);o.frequency.exponentialRampToValueAtTime(600,t+.08);g.gain.setValueAtTime(.15,t);g.gain.exponentialRampToValueAtTime(.0001,t+.1);o.start(t);o.stop(t+.11)}catch(e){}}document.addEventListener('pointerdown',function(e){if(e.target.closest('button,a'))bp()})</script>"
-    "</head><body><h2><span class=emb></span>Amy Box</h2>");
+    "</head><body><h2><span class=emb></span>Mary Box</h2>");
   if(WiFi.status() == WL_CONNECTED) h += "<a class=big href=/hub>&#9889; OPEN MOTO HUB</a>";
   if(note.length()) h += "<div class=card><b>" + note + "</b></div>";
   h += "<div class=card>Wi-Fi: ";
   if(WiFi.status() == WL_CONNECTED){ h += "<span class=ok>on "; h += esc(ssid); h += " ("; h += WiFi.localIP().toString(); h += ")</span>"; }
   else h += "<span class=no>not connected</span>";
-  h += "<br>Amy's message service: ";
+  h += "<br>Mary's message service: ";
   h += (subOk && httpCode == 200) ? "<span class=ok>connected</span>" : "<span class=no>not connected yet</span>";
   h += "</div><form method=post action=/save><div class=card><b>1. Your Wi-Fi</b> <small>(2.4 GHz)</small><select name=ssid><option value=''>pick it here...</option>";
   h += wifiList;
   h += "</select><input name=ssid2 placeholder='...or type the Wi-Fi name' autocapitalize=off autocomplete=off><input name=pass placeholder='Wi-Fi password' value=\"" + esc(pass) + "\" autocapitalize=off autocomplete=off></div>";
-  h += "<div class=card><b>2. Secret code from Amy</b><br><small>In Amy: 3 dots &gt; Remote switches &gt; Copy code. Then hold your finger here and tap Paste.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
+  h += "<div class=card><b>2. Secret code from Mary</b><br><small>In Mary: 3 dots &gt; Remote switches &gt; Copy code. Then hold your finger here and tap Paste.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<div class=card><b>3. Relay pins</b> <small>(-1 = not used)</small><br>";
   for(int i = 0; i < NREL; i++) h += "<input class=pin type=number name=p" + String(i + 1) + " value=" + String(pins[i]) + ">";
   h += String("<small>") + (board == 4 ? "On the small board use 26, 27, 25, 32, 33, 18, 19 or 23 (21 and 22 run the tiny screen). A short press on its BOOT button flips switch 1." : board == 3 ? "On the yellow board use only 22 or 27 (the small plug marked CN1)." : board == 2 ? "On the 2.8 inch touch board use only 2, 14 or 21 (the small plug marked IO2 IO3 IO14 IO21)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
@@ -6790,7 +6814,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>AmyRelay 5.0 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>Mary Box 5.1 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6798,7 +6822,7 @@ void handleSave(){
   String s = web.arg("ssid2"); s.trim(); if(!s.length()) s = web.arg("ssid");
   String c = web.arg("code"); c.trim();
   if(!s.length()){ web.send(200, "text/html", page("Pick your Wi-Fi first.")); return; }
-  if(!goodCode(c)){ web.send(200, "text/html", page("The secret code is missing or not right. Copy it in Amy and paste it here.")); return; }
+  if(!goodCode(c)){ web.send(200, "text/html", page("The secret code is missing or not right. Copy it in Mary and paste it here.")); return; }
   int nb = web.arg("bd").toInt(); if(nb < 0 || nb > 2) nb = 0; if(CYD) nb = board;
   bool swap = nb != board;                                       // a different board was picked: start from that board's own pins
   int np[NREL];
@@ -6823,7 +6847,7 @@ void handleSave(){
   if(web.hasArg("vo")){ int v = web.arg("vo").toInt(); prefs.putInt("vo", v < 1 || v > 3 ? 2 : v); }
   if(web.hasArg("sd")){ int v = web.arg("sd").toInt(); prefs.putInt("sd", v == 6 || v == 8 ? v : 0); }
   web.send(200, "text/html", String("<meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:Arial;background:#11151b;color:#eee;padding:20px;font-size:19px'><h2>Saved.</h2>"
-    "The box is restarting and joining your Wi-Fi. Put the phone back on its normal Wi-Fi, open Amy, and say: <b>switch one on</b>."));
+    "The box is restarting and joining your Wi-Fi. Put the phone back on its normal Wi-Fi, open Mary, and say: <b>switch one on</b>."));
   delay(1200);
   ESP.restart();
 }
@@ -6847,7 +6871,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("AmyRelay 5.0 - Wi-Fi switch box for Amy AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("Mary Box 5.1 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
@@ -6900,15 +6924,73 @@ void setup(){
   if(ssid.length()) startSTA(); else startAP();
   web.begin();
 }
+// ---- the drain pan (Moto Drain Watch board on the same Wi-Fi)
+bool camShow(){                                                   // the drain camera picture, full screen
+  if(!lcdOn || !drainIp.length() || WiFi.status() != WL_CONNECTED) return false;
+  WiFiClient c; HTTPClient h; h.setConnectTimeout(2000); h.setTimeout(6000);
+  if(!h.begin(c, "http://" + drainIp + "/pic.jpg")) return false;
+  bool good = false;
+  if(h.GET() == 200){
+    int len = h.getSize();
+    if(len > 100 && len < 90000){
+      uint8_t* jpg = (uint8_t*)malloc(len);
+      uint8_t* px = (uint8_t*)malloc(160 * 120 * 2);
+      if(jpg && px){
+        WiFiClient* st = h.getStreamPtr(); int got = 0; unsigned long t = millis();
+        while(got < len && millis() - t < 6000){ int a = st->available(); if(a > 0) got += st->readBytes(jpg + got, a < len - got ? a : len - got); else delay(2); }
+        if(got == len && jpg2rgb565(jpg, len, px, JPG_SCALE_2X)){
+          static uint8_t line[640];
+          lcdOpen(); lcdWindow(0, 0, LCD_W, LCD_H);
+          for(int y = 0; y < 120; y++){
+            const uint8_t* r = px + y * 320;
+            for(int x = 0; x < 160; x++){ line[x * 4] = line[x * 4 + 2] = r[x * 2]; line[x * 4 + 1] = line[x * 4 + 3] = r[x * 2 + 1]; }
+            lcdSpi.writeBytes(line, 640); lcdSpi.writeBytes(line, 640);
+          }
+          lcdClose();
+          good = true;
+        }
+      }
+      if(jpg) free(jpg);
+      if(px) free(px);
+    }
+  }
+  h.end();
+  return good;
+}
+void drainLoop(){
+  if(camOn){
+    if(millis() - camOpened > 120000UL){ camOn = false; lcdDraw(true); return; }      // 2 minutes: back to the buttons
+    if(!camAt || millis() - camAt > 3000UL){
+      camAt = millis(); if(!camAt) camAt = 1;
+      if(camShow()){
+        lcdText(4, 4, drainWet == 1 ? "WATER IN PAN!" : "DRAIN: DRY", 0xFFFF, drainWet == 1 ? rgb(200, 20, 30) : rgb(20, 120, 60), 1);
+        lcdText(4, 212, "TAP TO GO BACK", 0xFFFF, 0x0000, 1);
+      } else {
+        lcdFill(0, 0, LCD_W, LCD_H, 0x0000);
+        lcdText(40, 100, "NO PICTURE YET", 0xFFFF, 0x0000, 1);
+        lcdText(40, 140, "TAP TO GO BACK", rgb(200, 200, 200), 0x0000, 1);
+      }
+    }
+    return;
+  }
+  if(drainWet == 1 && millis() - drainSeen < 120000UL && (!drainAlarmAt || millis() - drainAlarmAt > 30000UL)){
+    drainAlarmAt = millis(); if(!drainAlarmAt) drainAlarmAt = 1;
+    if(asleep) lcdSleep(false);
+    for(int k = 0; k < 3; k++){ fxNote(988, 160); fxNote(740, 160); }
+    showMsg("WATER IN DRAIN PAN!");
+  }
+}
+
 void loop(){
   wifiLoop();
   bzLoop();
   tpLoop();
-  if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
+  if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && !camOn && drainWet != 1 && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
   web.handleClient();
   subLoop();
   hubLoop();
   peerLoop();
+  drainLoop();
   if(needReport && WiFi.status() == WL_CONNECTED && goodCode(code)){
     needReport = false;
     if(!postState()) Serial.println("  (could not send the answer back)");
