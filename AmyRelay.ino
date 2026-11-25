@@ -1,4 +1,8 @@
-// AMYRELAY_VERSION 5.3   (the build names the files with this number)
+// AMYRELAY_VERSION 5.4   (the build names the files with this number)
+// 5.4 MARY'S MAGIC BOX: page 3 buttons WEB (real web pages through the Jetson), WI-FI (pick Wi-Fi on the screen),
+//     TYPE (a keyboard on the screen to ask Mary), PHOTOS (pictures from the SD card), MARY. Real MP3 songs from the
+//     SD card (MUSIC / SONG buttons). Put a picture called mary.jpg on the SD card and Mary has that face.
+//     Mary shows her answer and switches the light right away, then speaks. Big Wi-Fi bars. Knows Doctor Magic too.
 // 5.3 MARY'S MAGIC BOX: Wi-Fi bars at the top, plain words when Wi-Fi fails (TOO WEAK, WRONG PASSWORD, NOT FOUND),
 //     Mary's Wi-Fi built in, the secret code is not needed, joins the strongest Mary Wi-Fi it can hear.
 // 5.2 MARY TALKS (black 2.8 inch box): tap Mary's face at the bottom, HOLD the TALK button and speak, let go.
@@ -46,6 +50,15 @@
 #define CYD 1                               // built for the YELLOW 2.8 inch board (ESP32-2432S028): screen 14 12 13 15 2 21, touch 25 32 39 33, speaker 26, relays on 22 and 27 (plug CN1)
 #else
 #define CYD 0
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include <SD_MMC.h>
+#include <AudioFileSourceFS.h>
+#include <AudioGeneratorMP3.h>
+#include <AudioOutput.h>
+#define HAS_SD 1
+#else
+#define HAS_SD 0
 #endif
 // one reader for Google's answer: handles the chunked pieces
 struct GRead { WiFiClientSecure* c; bool chunked; long left; uint8_t b[1024]; int n, i; unsigned long t;
@@ -117,6 +130,18 @@ void aiTask(void* arg);
 String gKey = "", gTalk = "gemini-flash-lite-latest", gVoice = "gemini-2.5-flash-preview-tts";      // Mary's AI (Google Gemini, free key)
 volatile int aiState = 0; volatile bool aiRec = false; volatile bool vPlay = false; volatile int vN = 0, vPos = 0, recN = 0;      // 0 idle 1 listening 2 thinking 3 answer ready
 String aiQ = "", aiText = "", aiCmd = ""; int16_t *recL = NULL, *recR = NULL, *vBuf = NULL; int micPin = 0; bool micOk = false;
+// ---- 5.4: keyboard, Wi-Fi page, web pages, SD card songs and photos, Mary's own picture
+bool kbOn = false, wfOn = false, webOn = false, phOn = false, kbShift = false, kbSym = false, webErr = false; volatile bool txtDone = false;
+int kbFor = 0;                                   // what the keyboard is for: 1 web address, 2 Wi-Fi password, 3 ask Mary, 4 type on the web page
+String kbText = "", wfPick = "", webAct = "", joinSsid = "", joinPass = "";
+String wfName[5]; int wfRs[5]; int wfN = 0;
+unsigned long webAt = 0, phAt = 0; IPAddress webIp;
+uint8_t *webPx = NULL, *webJpg = NULL;
+#define WEBJ 150000
+#define MU_N 16384
+String sdSong[60], sdPic[60]; int sdSongN = 0, sdPicN = 0, phCur = 0; volatile int sdCur = 0, sdWant = -1; bool sdOk = false;
+int16_t* muBuf = NULL; volatile uint32_t muH = 0, muT = 0;
+uint16_t *maryBig = NULL, *maryFace = NULL;
 String drainIp = ""; int drainWet = -1; unsigned long drainSeen = 0, drainAlarmAt = 0, camAt = 0, camOpened = 0; bool camOn = false;
 int bzPin = 4, board = 0;                   // buzzer pin (-1 = no buzzer).   board: 0 = plain ESP32-S3, no screen    1 = red MaTouch with the 2.8 inch screen
 bool bzFlip = false, bzClick = true, bzAlarm = false, saidReady = false, lcdOn = false;
@@ -306,11 +331,27 @@ String wifiWhy(){                                                // plain words 
   if(wReason == 2 || wReason == 15 || wReason == 202 || wReason == 204) return String("WRONG WI-FI PASSWORD");
   return String("Looking for Wi-Fi...");
 }
+String normW(const String& s){ String o; for(unsigned int i = 0; i < s.length(); i++){ char c = s.charAt(i); if(isalnum((unsigned char)c)) o += (char)tolower((unsigned char)c); } return o; }
+bool isKnown(const String& s){ String n = normW(s); return s == ssid || n == "doctormagic" || n == "mjcaviness2"; }
+String knownPass(const String& s){ if(s == ssid) return pass; if(isKnown(s)) return String("Shocker1"); return String(""); }
 void scanWifi(){
-  wifiList = ""; tgtRssi = -127; tgtCh = 0;
+  wifiList = ""; tgtRssi = -127; tgtCh = 0; joinSsid = ssid; joinPass = pass;
   int n = WiFi.scanNetworks();
-  for(int i = 0; i < n; i++){ String s = WiFi.SSID(i); int r = WiFi.RSSI(i);
-    if(s.length() && s == ssid && r > tgtRssi){ tgtRssi = r; tgtCh = WiFi.channel(i); memcpy(tgtBss, WiFi.BSSID(i), 6); }
+  int bS = -127, bA = -127, iS = -1, iA = -1;
+  for(int i = 0; i < n; i++){ String s = WiFi.SSID(i); int r = WiFi.RSSI(i); if(!s.length()) continue;
+    if(s == ssid && r > bS){ bS = r; iS = i; }
+    if(isKnown(s) && r > bA){ bA = r; iA = i; }
+  }
+  int k = (iS >= 0 && barsOf(bS) >= 2) ? iS : (iA >= 0 ? iA : iS);      // your saved Wi-Fi when it is good, or else the strongest Wi-Fi the box knows (Mary's, Doctor Magic)
+  if(k >= 0){ joinSsid = WiFi.SSID(k); joinPass = knownPass(joinSsid); tgtRssi = WiFi.RSSI(k); tgtCh = WiFi.channel(k); memcpy(tgtBss, WiFi.BSSID(k), 6); }
+  wfN = 0;                                                        // the 5 strongest names for the Wi-Fi page on the screen
+  for(int i = 0; i < n; i++){ String s = WiFi.SSID(i); int r = WiFi.RSSI(i); if(!s.length()) continue;
+    bool dup = false; for(int j = 0; j < wfN; j++) if(wfName[j] == s){ dup = true; if(r > wfRs[j]) wfRs[j] = r; }
+    if(dup) continue;
+    int at = wfN; while(at > 0 && wfRs[at - 1] < r) at--;
+    if(at >= 5) continue;
+    for(int j = (wfN < 5 ? wfN : 4); j > at; j--){ wfName[j] = wfName[j - 1]; wfRs[j] = wfRs[j - 1]; }
+    wfName[at] = s; wfRs[at] = r; if(wfN < 5) wfN++;
   }
   for(int i = 0; i < n && i < 14; i++){ String s = WiFi.SSID(i); if(!s.length() || wifiList.indexOf("\"" + esc(s) + "\"") >= 0) continue;
     int b = barsOf(WiFi.RSSI(i));
@@ -338,9 +379,9 @@ void startSTA(){
   WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.setHostname("amy-box"); WiFi.setTxPower(WIFI_POWER_19_5dBm);
   scanWifi();                                                     // listen first: pick the strongest Mary Wi-Fi and remember how strong it is
   wReason = 0;
-  if(tgtCh) WiFi.begin(ssid.c_str(), pass.c_str(), tgtCh, tgtBss); else WiFi.begin(ssid.c_str(), pass.c_str());
+  if(tgtCh) WiFi.begin(joinSsid.c_str(), joinPass.c_str(), tgtCh, tgtBss); else WiFi.begin(ssid.c_str(), pass.c_str());
   staTryAt = millis(); wifiLostAt = millis();
-  Serial.print("Joining Wi-Fi: "); Serial.println(ssid);
+  Serial.print("Joining Wi-Fi: "); Serial.println(tgtCh ? joinSsid : ssid);
 }
 void wifiLoop(){
   if(apUp){
@@ -6079,7 +6120,7 @@ void auFill(int16_t* buf, int n){                                // makes the ne
   static uint32_t fxPh = 0, fxInc = 0, muPh = 0, muInc = 0, cpos = 0, cn = 0; static uint32_t muPh2 = 0, muPh3 = 0; static int fxLeft = 0, fxTot = 0, muLeft = 0, muTot = 0, muIdx = 0;
   static const uint8_t* cp = NULL; static bool wasMusic = false;
   if(musicOn && !wasMusic){ muLeft = 0; muIdx = 0; }
-  if(!musicOn && wasMusic){ muLeft = 0; song = (song + 1) % 4; }
+  if(!musicOn && wasMusic){ muLeft = 0; song = (song + 1) % 4; muT = muH; }
   wasMusic = musicOn;
   if(songWant >= 0){ song = songWant % 4; songWant = -1; muLeft = 0; muIdx = 0; }
   for(int i = 0; i < n; i++){
@@ -6093,7 +6134,10 @@ void auFill(int16_t* buf, int n){                                // makes the ne
       if(clipNew){ clipNew = false; cp = clipP; cn = clipN; cpos = 0; }
       if(cp){ uint32_t k = cpos >> 1; if(k < cn){ s += ((int)pgm_read_byte(cp + k) - 128) * 190; cpos++; } else cp = NULL; }
     }
-    if(musicOn){
+    if(musicOn && sdSongN > 0){                                   // a real song from the SD card
+      if(muBuf && muH != muT){ s += ((int)muBuf[muT & (MU_N - 1)] * 3) >> 2; muT++; }
+    }
+    else if(musicOn){
       if(muLeft <= 0){
         if(muIdx + 1 >= (int)SONG_N[song]){ muIdx = 0; song = (song + 1) % 4; }
         int key = pgm_read_byte(SONGS[song] + muIdx), len = pgm_read_byte(SONGS[song] + muIdx + 1); muIdx += 2;
@@ -6330,16 +6374,24 @@ void jetTap(int i){
 void paintJet(){
   bool mary = gKey.length() > 0;
   cvText(8, 3, mary ? "MARY" : "MARY AI", rgb(255, 220, 90), 1);
-  String st = mary ? (aiState == 1 ? String("LISTENING") : aiState == 2 ? String("THINKING") : vPlay ? String("TALKING") : String("READY"))
+  String st = mary ? (aiState == 1 ? String("LISTENING") : aiState == 2 ? String("THINKING") : aiState == 4 ? String("VOICE...") : vPlay ? String("TALKING") : String("READY"))
                    : (!hubHost.length() ? String("NO JETSON SET") : hubOk ? String("JETSON OK") : String("NO JETSON"));
   bool good = mary ? true : hubOk;
   cvText(LCD_W - 6 - (int)st.length() * FW, 3, st.c_str(), good ? rgb(140, 255, 170) : rgb(255, 150, 150), 1);
   cvGlass(4, 33, LCD_W - 8, 106, 12, rgb(14, 34, 84), 170, 0);
   String L[24]; int n = ansLines(L, 24);
-  if(!n){
+  if(!n && mary && maryBig){                                      // Mary's own picture from the SD card
+    cvImg(12, 36, 100, 100, maryBig);
+    const char* a = aiState == 1 ? "I'm listening" : aiState == 2 ? "Mary is" : "HOLD TALK";
+    const char* b = aiState == 1 ? "Let go when" : aiState == 2 ? "thinking..." : "and speak.";
+    const char* c3 = aiState == 1 ? "you're done." : aiState == 2 ? "" : "Or tap here";
+    const char* d = aiState == 0 ? "to type." : "";
+    cvText(122, 38, a, rgb(255, 230, 120), 1); cvText(122, 63, b, rgb(200, 210, 230), 1); cvText(122, 88, c3, rgb(200, 210, 230), 1); cvText(122, 113, d, rgb(200, 210, 230), 1);
+  }
+  else if(!n){
     if(mary && aiState == 1){ cvText(14, 38, "I'm listening...", rgb(255, 230, 120), 1); cvText(14, 63, "Let go when you're done", rgb(200, 210, 230), 1); }
     else if(mary && aiState == 2) cvText(14, 38, "Mary is thinking...", rgb(200, 210, 230), 1);
-    else if(mary){ cvText(14, 38, "HOLD TALK and speak.", rgb(200, 210, 230), 1); cvText(14, 63, "Let go when done.", rgb(200, 210, 230), 1); }
+    else if(mary){ cvText(14, 38, "HOLD TALK and speak.", rgb(200, 210, 230), 1); cvText(14, 63, "Let go when done.", rgb(200, 210, 230), 1); cvText(14, 88, "Or tap here to type.", rgb(200, 210, 230), 1); }
     else cvText(14, 38, hubWait ? "Mary is thinking..." : "Tap a button to ask Mary", rgb(200, 210, 230), 1);
   }
   for(int k = 0; k < 4; k++){ int j = ansPg * 4 + k; if(j < n) cvText(10, 37 + k * 25, L[j].c_str(), 0xFFFF, 1); }
@@ -6375,21 +6427,28 @@ void drawTile(int slot){
   if(y + 84 <= cvY0 || y >= cvY0 + cvHh) return;
   bool used = tileUsed(id), isOn = tileOn(id), door = id < NREL && isDoor(id);
   uint16_t tint = !used ? rgb(70, 78, 92) : isOn ? rgb(255, 196, 40) : door ? rgb(40, 120, 240) : id == 4 ? rgb(150, 70, 220) : id == 6 ? rgb(20, 170, 150) : id == 7 ? rgb(50, 50, 130)
-                : id == 8 ? rgb(205, 60, 60) : id == 9 ? rgb(150, 70, 220) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11) ? rgb(60, 100, 170) : rgb(14, 34, 84);
+                : id == 8 ? rgb(205, 60, 60) : id == 9 ? rgb(150, 70, 220) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11 || id == 17) ? rgb(60, 100, 170)
+                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : rgb(14, 34, 84);
   cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);              // the dark slab underneath: the button stands up off the picture
   cvGlass(x, y, 100, 77, 14, tint, isOn ? 195 : 165, 0);
-  const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_BACK
+  const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_MORE
+                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_GIRL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK
                      : tileBuzz(id) ? IC_BELL : door ? IC_GARAGE : (nameHas(id, "LIGHT") || nameHas(id, "LAMP")) ? IC_LIGHT : IC_PLUG;
   cvSprite(x + 7, y + 6, ic);
-  String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String("<<")
+  String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String(">>")
+            : id == 12 ? String("GO") : id == 13 ? (WiFi.status() == WL_CONNECTED ? String(wifiBars()) + "/4" : String("--")) : id == 14 ? String("ABC")
+            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<")
             : !used ? String("--") : door ? String("TAP") : isOn ? String("ON") : String("OFF");
   cvText(x + 100 - 7 - (int)st.length() * FW, y + 10, st.c_str(), 0xFFFF, 1);
-  String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("BACK") : nm[id];
+  String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("MORE")
+              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("TYPE") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : nm[id];
   if(name.length() > 8) name = name.substring(0, 8);
   cvText(x + (100 - (int)name.length() * FW) / 2, y + 47, name.c_str(), 0xFFFF, 1);
 }
 void paintScene(){                                                 // paints whatever part of the screen lies in the strip being built
-  String net = apUp ? "SETUP" : (WiFi.status() != WL_CONNECTED ? "NO WIFI" : ((subOk && httpCode == 200) ? "READY" : "WIFI OK"));
+  if(kbOn){ paintKb(); return; }                                  // the keyboard and the Wi-Fi page fill the whole screen
+  if(wfOn){ paintWf(); return; }
+  String net = apUp ? "SETUP" : (WiFi.status() != WL_CONNECTED ? "NO NET" : ((subOk && httpCode == 200) ? "READY" : "ONLINE"));
   cvGlass(0, 0, LCD_W, 30, 0, rgb(6, 14, 40), 150, 0);
   String foot;
   if(gameOn){
@@ -6413,13 +6472,14 @@ void paintScene(){                                                 // paints wha
     int nx = LCD_W - 6 - (int)net.length() * FW, wb = wifiBars();
     cvText(nx, 3, net.c_str(), net == "READY" ? rgb(140, 255, 170) : rgb(255, 214, 90), 1);
     for(int i = 0; i < 4; i++)                                     // the Wi-Fi bars
-      cvBox(nx - 26 + i * 6, 24 - (i + 1) * 5, 4, (i + 1) * 5, i < wb ? (wb >= 3 ? rgb(120, 255, 150) : wb == 2 ? rgb(255, 214, 90) : rgb(255, 90, 90)) : rgb(70, 80, 100));
+      cvBox(nx - 36 + i * 8, 26 - (i + 1) * 5 - 1, 6, (i + 1) * 5 + 1, i < wb ? (wb >= 3 ? rgb(120, 255, 150) : wb == 2 ? rgb(255, 214, 90) : rgb(255, 90, 90)) : rgb(70, 80, 100));
     for(int i = 0; i < 6; i++) drawTile(i);
     foot = (!apUp && gKey.length() && WiFi.status() == WL_CONNECTED) ? String("TAP ME TO TALK") : apUp ? (((millis() / 3000) & 1) && ssid.length() ? wifiWhy() : String("SETUP: ") + AP_NAME) : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : wifiWhy());
   }
   if(msgUntil && (long)(msgUntil - millis()) > 0) foot = msgText;
   cvGlass(0, 204, LCD_W, 36, 0, rgb(6, 14, 40), 160, 0);
-  cvSprite(3, 204 - ((vPlay && ((millis() / 180) & 1)) ? 3 : 0), IC_GIRL);      // Mary moves while she talks
+  { int bob = (vPlay && ((millis() / 180) & 1)) ? 3 : 0;          // Mary moves while she talks
+    if(maryFace) cvImg(3, 204 - bob, 36, 36, maryFace); else cvSprite(3, 204 - bob, IC_GIRL); }
   if(foot.length() > 22) foot = foot.substring(0, 22);
   if(foot.length() > 22 && jetOn && !hubWait && hubPhone.length()) foot = hubPhone.substring(0, 22);
   cvText(44, 210, foot.c_str(), 0xFFFF, 1);
@@ -6429,6 +6489,9 @@ void lcdDraw(bool force){
   bool msgOn = msgUntil && (long)(msgUntil - millis()) > 0;
   String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet) + "|" + String(wifiBars()) + wifiWhy() + String(WiFi.status() == WL_CONNECTED ? 0 : (int)((millis() / 3000) & 1));
   if(camOn) return;                                               // the drain picture is on the screen
+  if((webOn || phOn) && !kbOn) return;                            // a web page or a photo is on the screen
+  if(kbOn) key += "|k" + String(kbFor) + String(kbShift ? 1 : 0) + String(kbSym ? 1 : 0) + kbText;
+  if(wfOn){ key += "|w" + String(wfN) + WiFi.localIP().toString(); for(int i = 0; i < wfN && i < 5; i++) key += wfName[i] + String(barsOf(wfRs[i])); }
   key += "|d" + String(drainWet) + String(drainTile(2) ? 1 : 0);
   key += "|m" + String(aiState) + String(vPlay ? (int)((millis() / 180) & 1) : 2);
   if(jetOn){ key += "|j" + String(hubOk) + String(hubWait) + String(ansPg) + hubAns + hubInfo + hubPhone; }
@@ -6624,13 +6687,21 @@ void tileTap(int slot){                                            // a finger o
   int id = pgNo * 6 + slot;
   fxNote(1500, 30);
   if(drainTile(id)){ camOn = true; camAt = 0; camOpened = millis(); return; }
-  if(id == 4){ musicOn = !musicOn; sayClip(musicOn ? 7 : 8); showMsg(musicOn ? "MUSIC ON" : "MUSIC OFF"); return; }
+  if(id == 4){ musicOn = !musicOn; sayClip(musicOn ? 7 : 8); showMsg(musicOn ? (sdSongN ? songName(sdCur) : String("MUSIC ON")) : String("MUSIC OFF")); return; }
   if(id == 5){ pgNo = 1; return; }
-  if(id == 11){ pgNo = 0; return; }
+  if(id == 11){ pgNo = 2; return; }
+  if(id == 17){ pgNo = 0; return; }
+  if(id == 12){ webOn = true; webAt = 0; webAct = ""; webErr = false; return; }
+  if(id == 13){ wfOn = true; wfN = -1; return; }                 // -1: look for Wi-Fi right after the screen says so
+  if(id == 14){ if(!gKey.length()){ showMsg("MARY NEEDS THE KEY"); return; } kbOpen(3, ""); return; }
+  if(id == 15){ if(!sdPicN){ showMsg("NO PHOTOS ON SD CARD"); return; } phOn = true; phAt = 0; return; }
+  if(id == 16){ if(!gKey.length() && !hubHost.length()){ showMsg("MARY NEEDS THE KEY"); return; } jetOn = true; ansPg = 0; hubAt = 0; return; }
   if(id == 6){ gameStart(true); return; }
   if(id == 7){ lcdSleep(true); return; }
   if(id == 8){ for(int i = 0; i < NREL; i++) setRelay(i, false); if(bzAlarm) setBuzz(false); musicOn = false; fxNote(600, 90); fxNote(400, 170); sayClip(13); showMsg("ALL OFF"); reportTag = ""; needReport = true; return; }
-  if(id == 9){ int k = (song + 1) % 4; songWant = k; musicOn = true; showMsg(SONG_NAME[k]); return; }
+  if(id == 9){
+    if(sdSongN){ int k = (sdCur + 1) % sdSongN; sdWant = k; musicOn = true; showMsg(songName(k)); return; }      // the next real song from the SD card
+    int k = (song + 1) % 4; songWant = k; musicOn = true; showMsg(SONG_NAME[k]); return; }
   if(id == 10){ volSet = volSet % 3 + 1; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); fxNote(784, 200); sayClip(9); showMsg(String("LOUD ") + String(volSet)); return; }
   if(tileBuzz(id)){ setBuzz(!bzAlarm); if(!bzAlarm) sayClip(6); showMsg(bzAlarm ? "BUZZER ON" : "BUZZER OFF"); }
   else if(isDoor(id)){ setRelay(id, true); pulseEnd[id] = millis() + 700; if(!pulseEnd[id]) pulseEnd[id] = 1; if(spk) announce(id, true); else beep(1, 90, 110); }
@@ -6716,7 +6787,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 5.3. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 5.4. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 void tpLoop(){
@@ -6726,17 +6797,21 @@ void tpLoop(){
   tpSeen = now;
   int x = 0, y = 0; bool down = board == 3 ? tpRead3(x, y) : tpRead(x, y);
   if(board == 3){ static int n3 = 0; if(down){ if(++n3 < 2) down = false; } else n3 = 0; }      // a pressed screen must hold for two looks: no ghost taps
-  if(down && !tpDown && now - tpAt > (gameOn ? 160UL : 280UL)){
+  if(down && !tpDown && now - tpAt > (kbOn ? 140UL : gameOn ? 160UL : 280UL)){
     tpAt = now; tpTaps++;
     if(asleep){ lcdSleep(false); tpDown = true; return; }         // the first touch only wakes the screen
     if(camOn){ camOn = false; lastTouch = now; fxNote(600, 60); lcdDraw(true); tpDown = true; return; }      // a tap on the drain picture goes back
     lastTouch = now;
-    if(gameOn){
+    if((webOn || phOn) && !kbOn){ if(webOn) webTouch(x, y); else phTouch(x, y); if(!webOn && !phOn){ lcdShown = ""; lcdDraw(true); } tpDown = true; return; }
+    if(kbOn) kbTouch(x, y);
+    else if(wfOn) wfTouch(x, y);
+    else if(gameOn){
       if((x > 215 && y < 40) || (x >= 256 && y >= 140 && y < 204)){ gameOn = false; fxNote(600, 60); }
       else if(gWin) gameStart(false);
       else if(x >= 67 && x < 256 && y >= 34 && y < 202) gTap((x - 67) / 63 + ((y - 34) / 56) * 3);
     }
-    else if(jetOn){ if(y >= 140 && y < 204){ int i = x / 64; if(i > 4) i = 4; jetTap(i); } }
+    else if(jetOn){ if(y >= 140 && y < 204){ int i = x / 64; if(i > 4) i = 4; jetTap(i); }
+                    else if(y >= 33 && y < 140 && gKey.length() && aiState == 0){ fxNote(1500, 30); kbOpen(3, ""); } }      // tap Mary's box to type a question
     else if(y >= 204 && x < 60 && (hubHost.length() || gKey.length())){ jetOn = true; ansPg = 0; hubAt = 0; fxNote(1500, 30); }      // Amy's face at the bottom: the Amy AI page
     else if(y >= 31 && y < 203){ int i = (x < 108 ? 0 : (x < 213 ? 1 : 2)) + (y < 117 ? 0 : 3); tileTap(i); }
     lcdDraw(false);
@@ -6879,7 +6954,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>Mary&#39;s Magic Box 5.3 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>Mary&#39;s Magic Box 5.4 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6941,11 +7016,12 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("Mary's Magic Box 5.3 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("Mary's Magic Box 5.4 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", "");
-  if(!ssid.length()){ ssid = "mjcaviness2"; pass = "Shocker1"; }      // Mary's Wi-Fi is built in: nothing to type code = prefs.getString("code", "");
+  if(!ssid.length()){ ssid = "mjcaviness2"; pass = "Shocker1"; }      // Mary's Wi-Fi is built in: nothing to type
+  code = prefs.getString("code", "");
   for(int i = 0; i < NREL; i++){ pins[i] = prefs.getInt((String("p") + String(i + 1)).c_str(), i == 0 ? 5 : -1); if(!goodPin(pins[i])) pins[i] = -1; }
   activeLow = prefs.getBool("al", true); checkCert = prefs.getBool("cc", true);
   for(int i = 0; i < NREL; i++) nm[i] = cleanName(prefs.getString((String("n") + String(i + 1)).c_str(), ""), i);
@@ -6997,6 +7073,7 @@ void setup(){
   web.on("/peers", HTTP_GET, handlePeers);
   web.onNotFound(handleOther);
   WiFi.onEvent([](WiFiEvent_t e, WiFiEventInfo_t info){ wReason = info.wifi_sta_disconnected.reason; }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);      // remember WHY Wi-Fi failed
+  sdStart();                                                       // the SD card: songs, photos, Mary's picture
   if(ssid.length()) startSTA(); else startAP();
   web.begin();
 }
@@ -7039,7 +7116,7 @@ bool aiAnswer(){                                                  // call 1: hea
   String pre = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jesc(sysText()) + "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"" +
                jesc(voice ? String("Listen to what I said in this recording and answer me.") : aiQ) + "\"}";
   String mid = voice ? String(",{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"") : String("");
-  String post = String(voice ? "\"}}" : "") + "]}],\"generationConfig\":{\"maxOutputTokens\":800,\"temperature\":0.7}}";
+  String post = String(voice ? "\"}}" : "") + "]}],\"generationConfig\":{\"maxOutputTokens\":300,\"temperature\":0.7}}";
   long wavLen = 44 + (long)recN * 2, b64 = voice ? ((wavLen + 2) / 3) * 4 : 0;
   WiFiClientSecure c;
   if(!gOpen(c, gTalk, (long)pre.length() + mid.length() + b64 + post.length())){ aiText = "Mary can't reach the internet right now."; return false; }
@@ -7113,7 +7190,8 @@ void aiTask(void* arg){
     if(aiState == 2){
       if(WiFi.status() != WL_CONNECTED){ aiText = "Mary needs the Wi-Fi to talk."; vN = 0; aiState = 3; continue; }
       vN = 0;
-      if(aiAnswer()) aiVoice();
+      txtDone = false;
+      if(aiAnswer()){ aiState = 4; aiVoice(); }
       aiState = 3;
     }
     delay(20);
@@ -7177,27 +7255,382 @@ void drainLoop(){
   }
 }
 
+// ============================================================ 5.4 MARY'S MAGIC BOX: keyboard, Wi-Fi page, web pages, SD card
+void cvImg(int x, int y, int w, int h, const uint16_t* p){        // a picture from memory into the strip being built
+  for(int yy = (y < cvY0 ? cvY0 : y); yy < y + h && yy < cvY0 + cvHh; yy++)
+    for(int xx = 0; xx < w; xx++){ int X = x + xx; if(X >= 0 && X < LCD_W) CV[(yy - cvY0) * LCD_W + X] = p[(yy - y) * w + xx]; }
+}
+// ---- the keyboard on the screen
+static const char* const KB_A[4] = {"1234567890", "qwertyuiop", "asdfghjkl@", "zxcvbnm.-/"};
+static const char* const KB_B[4] = {"!@#$%^&*()", "-_=+[]{}\\|", ";:'\",.<>?/", "~`@#&*+-_."};
+char kbChar(int r, int c){
+  char ch = (kbSym ? KB_B : KB_A)[r][c];
+  if(!kbSym && kbShift && ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);
+  return ch;
+}
+void kbOpen(int f, const String& t){ kbFor = f; kbText = t; kbShift = (f == 3); kbSym = false; kbOn = true; lcdShown = ""; }
+void kbClose(bool go){
+  kbOn = false; lcdShown = "";
+  String t = kbText; t.trim();
+  if(kbFor == 1 || kbFor == 4){ webAt = 0; if(!go) return; }      // back to the web page (it draws itself again)
+  if(!go) return;
+  if(kbFor == 1 && t.length()) webAct = "/go?u=" + urlEnc(t);
+  else if(kbFor == 4 && kbText.length()) webAct = "/type?enter=1&t=" + urlEnc(kbText);
+  else if(kbFor == 2){                                             // a new Wi-Fi: save it and join it
+    ssid = wfPick; pass = kbText; prefs.putString("ssid", ssid); prefs.putString("pass", pass);
+    wfOn = false; showMsg(String("JOINING ") + ssid); lcdDraw(true); startSTA();
+  }
+  else if(kbFor == 3 && t.length()){                               // ask Mary in writing
+    if(!gKey.length()){ showMsg("MARY NEEDS THE KEY"); return; }
+    jetOn = true; ansPg = 0; vPlay = false; aiAskText(t.c_str());
+  }
+}
+void kbKey(int x, int y, int w, const char* lb, uint16_t col){
+  cvGlass(x + 1, y + 2, w - 2, 38, 8, col, 205, 0);
+  cvText(x + (w - (int)strlen(lb) * FW) / 2, y + 9, lb, 0xFFFF, 1);
+}
+void paintKb(){
+  static const char* const TT[5] = {"", "WEB ADDRESS OR SEARCH", "WI-FI PASSWORD", "ASK MARY ANYTHING", "TYPE ON THE PAGE"};
+  cvGlass(0, 0, LCD_W, 34, 0, rgb(6, 14, 40), 210, 0);
+  if(!kbText.length()) cvText(6, 5, TT[kbFor >= 0 && kbFor <= 4 ? kbFor : 0], rgb(150, 165, 200), 1);
+  else { String t = kbText; if(t.length() > 22) t = t.substring(t.length() - 22); t += "_"; cvText(6, 5, t.c_str(), 0xFFFF, 1); }
+  cvGlass(284, 2, 34, 30, 8, rgb(225, 50, 60), 220, 0); cvText(295, 5, "X", 0xFFFF, 1);
+  for(int r = 0; r < 4; r++){
+    int y = 36 + r * 40; if(y + 40 <= cvY0 || y >= cvY0 + cvHh) continue;
+    for(int c = 0; c < 10; c++){
+      int x = c * 32;
+      cvGlass(x + 1, y + 2, 30, 37, 6, rgb(30, 60, 125), 205, 0);
+      char lb[2] = {kbChar(r, c), 0}; cvText(x + 10, y + 8, lb, 0xFFFF, 1);
+    }
+  }
+  int y = 196;
+  if(y + 44 > cvY0 && y < cvY0 + cvHh){
+    kbKey(0, y, 64, kbSym ? "abc" : "SHFT", kbShift && !kbSym ? rgb(255, 170, 30) : rgb(60, 100, 170));
+    kbKey(64, y, 64, kbSym ? "ABC" : "?123", rgb(60, 100, 170));
+    kbKey(128, y, 96, "SPACE", rgb(30, 60, 125));
+    kbKey(224, y, 48, "DEL", rgb(200, 110, 30));
+    kbKey(272, y, 48, kbFor == 3 ? "ASK" : kbFor == 2 ? "OK" : "GO", rgb(30, 160, 80));
+  }
+}
+void kbTouch(int x, int y){
+  fxNote(1700, 15);
+  if(y < 34){ if(x >= 276) kbClose(false); return; }
+  if(y >= 196){
+    if(x < 64){ if(kbSym) kbSym = false; else kbShift = !kbShift; }
+    else if(x < 128) kbSym = !kbSym;
+    else if(x < 224){ if(kbText.length() < 120) kbText += ' '; }
+    else if(x < 272){ if(kbText.length()) kbText.remove(kbText.length() - 1); }
+    else kbClose(true);
+    return;
+  }
+  if(y < 36) return;
+  int r = (y - 36) / 40, c = x / 32; if(r > 3) r = 3; if(c > 9) c = 9;
+  if(kbText.length() < 120) kbText += kbChar(r, c);
+  if(kbShift && !kbSym) kbShift = false;                           // one capital letter, then small again
+}
+// ---- the Wi-Fi page on the screen
+void paintWf(){
+  cvGlass(0, 0, LCD_W, 30, 0, rgb(6, 14, 40), 190, 0);
+  cvText(8, 3, "WI-FI", rgb(255, 220, 90), 1);
+  String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("NOT ON WI-FI");
+  cvText(LCD_W - 6 - (int)ip.length() * FW, 3, ip.c_str(), WiFi.status() == WL_CONNECTED ? rgb(140, 255, 170) : rgb(255, 150, 150), 1);
+  if(wfN < 0) cvText(20, 90, "LOOKING FOR WI-FI...", 0xFFFF, 1);
+  else if(wfN == 0) cvText(20, 90, "NO WI-FI FOUND", 0xFFFF, 1);
+  String now = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("");
+  for(int i = 0; i < wfN && i < 5; i++){
+    int y = 34 + i * 34;
+    bool mine = now.length() && wfName[i] == now;
+    cvGlass(4, y, LCD_W - 8, 31, 8, mine ? rgb(20, 150, 90) : rgb(14, 34, 84), 190, 0);
+    String nmx = (mine ? String("* ") : String("")) + wfName[i]; if(nmx.length() > 18) nmx = nmx.substring(0, 18);
+    cvText(12, y + 3, nmx.c_str(), 0xFFFF, 1);
+    int b = barsOf(wfRs[i]);
+    for(int k = 0; k < 4; k++) cvBox(270 + k * 9, y + 26 - (k + 1) * 5, 6, (k + 1) * 5, k < b ? (b >= 3 ? rgb(120, 255, 150) : b == 2 ? rgb(255, 214, 90) : rgb(255, 90, 90)) : rgb(70, 80, 100));
+  }
+  cvGlass(4, 206, 154, 32, 8, rgb(60, 100, 170), 205, 0); cvText(4 + (154 - 10 * FW) / 2, 210, "LOOK AGAIN", 0xFFFF, 1);
+  cvGlass(162, 206, 154, 32, 8, rgb(225, 50, 60), 205, 0); cvText(162 + (154 - 4 * FW) / 2, 210, "BACK", 0xFFFF, 1);
+}
+void wfTouch(int x, int y){
+  fxNote(1500, 30);
+  if(y >= 204){ if(x < 160) wfN = -1; else wfOn = false; return; }
+  if(y >= 34 && wfN > 0){ int i = (y - 34) / 34; if(i < wfN && i < 5){ wfPick = wfName[i]; kbOpen(2, knownPass(wfPick)); } }
+}
+// ---- pictures: JPEG size, and making a picture fit
+bool jpgSize(const uint8_t* b, int len, int& w, int& h){         // reads the width and height; false for "progressive" pictures this chip cannot open
+  int i = 2;
+  while(i + 9 < len){
+    if(b[i] != 0xFF){ i++; continue; }
+    uint8_t m = b[i + 1];
+    if(m == 0xC0 || m == 0xC1 || m == 0xC2){ h = (b[i + 5] << 8) | b[i + 6]; w = (b[i + 7] << 8) | b[i + 8]; return m != 0xC2; }
+    if(m == 0xD8 || m == 0x01 || m == 0xFF || (m >= 0xD0 && m <= 0xD7)){ i += (m == 0xFF ? 1 : 2); continue; }
+    int L = (b[i + 2] << 8) | b[i + 3]; if(L < 2) return false;
+    i += 2 + L;
+  }
+  return false;
+}
+uint8_t* jpgDecodeFit(const uint8_t* j, int len, int maxW, int maxH, int& ow, int& oh){      // opens the picture, made smaller (1/2, 1/4, 1/8) when it is big
+  int w = 0, h = 0; if(!jpgSize(j, len, w, h) || w < 8 || h < 8) return NULL;
+  int sc = 0; while(sc < 3 && ((w >> sc) > maxW * 2 || (h >> sc) > maxH * 2)) sc++;
+  ow = w >> sc; oh = h >> sc;
+  uint8_t* px = (uint8_t*)ps_malloc((size_t)(ow + 16) * (oh + 16) * 2); if(!px) return NULL;
+  if(!jpg2rgb565(j, len, px, (jpg_scale_t)sc)){ free(px); return NULL; }
+  return px;
+}
+uint8_t* sdJpg(const String& path, int& len){
+  len = 0;
+#if HAS_SD
+  if(!sdOk) return NULL;
+  File f = SD_MMC.open(path.c_str()); if(!f) return NULL;
+  len = (int)f.size(); if(len < 100 || len > 6000000){ f.close(); return NULL; }
+  uint8_t* b = (uint8_t*)ps_malloc(len); if(!b){ f.close(); return NULL; }
+  int got = (int)f.read(b, len); f.close();
+  if(got != len){ free(b); return NULL; }
+  return b;
+#else
+  return NULL;
+#endif
+}
+void showPhoto(const String& p){                                  // a photo from the SD card, as big as it fits
+  lcdFill(0, 0, LCD_W, LCD_H, 0x0000);
+  bool ok = false; int len = 0;
+  uint8_t* j = sdJpg(p, len);
+  if(j){
+    int ow = 0, oh = 0; uint8_t* px = jpgDecodeFit(j, len, LCD_W, LCD_H, ow, oh); free(j);
+    if(px){
+      int dw = LCD_W, dh = oh * LCD_W / ow; if(dh > LCD_H){ dh = LCD_H; dw = ow * LCD_H / oh; }
+      if(dw < 1) dw = 1; if(dh < 1) dh = 1;
+      static uint8_t line[LCD_W * 2];
+      lcdOpen(); lcdWindow((LCD_W - dw) / 2, (LCD_H - dh) / 2, dw, dh);
+      for(int y = 0; y < dh; y++){
+        const uint8_t* r = px + (size_t)(y * oh / dh) * ow * 2;
+        for(int x = 0; x < dw; x++){ int sx = x * ow / dw; line[x * 2] = r[sx * 2]; line[x * 2 + 1] = r[sx * 2 + 1]; }
+        lcdSpi.writeBytes(line, dw * 2);
+      }
+      lcdClose(); free(px); ok = true;
+    }
+  }
+  if(!ok){ lcdText(16, 100, "CAN'T OPEN THIS PHOTO", 0xFFFF, 0x0000, 1); lcdText(16, 130, "(save it as JPG)", rgb(200, 200, 200), 0x0000, 1); }
+  lcdText(4, 4, "< BACK", 0xFFFF, rgb(225, 50, 60), 1);
+  lcdText(LCD_W - 4 - 6 * FW, 4, "NEXT >", 0xFFFF, rgb(30, 120, 210), 1);
+}
+void phTouch(int x, int y){ fxNote(1500, 30); if(x < LCD_W / 3) phOn = false; else phAt = 0; }
+void phLoop(){
+  if(!phOn || kbOn) return;
+  if(millis() - lastTouch > 1800000UL){ phOn = false; lcdShown = ""; lcdDraw(true); return; }      // 30 minutes: back to the buttons
+  if(phAt && millis() - phAt < 8000UL) return;                     // a new photo every 8 seconds
+  phAt = millis(); if(!phAt) phAt = 1;
+  if(!sdPicN){ phOn = false; lcdShown = ""; lcdDraw(true); return; }
+  if(phCur >= sdPicN) phCur = 0;
+  showPhoto(sdPic[phCur]); phCur = (phCur + 1) % sdPicN;
+}
+// ---- web pages: the Jetson opens the page in a real browser and sends the picture (mary_web.py on the Jetson, port 8091)
+void webBar(){
+  static const char* const WB[6] = {"BACK", "GO", "ABC", "UP", "DOWN", "X"};
+  for(int b = 0; b < 6; b++){
+    uint16_t col = b == 5 ? rgb(225, 50, 60) : b == 1 ? rgb(30, 160, 80) : b == 2 ? rgb(200, 90, 160) : rgb(40, 80, 160);
+    int x = b * 53, w = b == 5 ? LCD_W - x : 52;
+    lcdFill(x, 0, w, 24, col);
+    lcdText(x + (w - (int)strlen(WB[b]) * FW) / 2, 0, WB[b], 0xFFFF, col, 1);
+  }
+}
+bool webDraw(int len){
+  int w = 0, h = 0;
+  if(!jpgSize(webJpg, len, w, h) || w > LCD_W || h > LCD_H - 24 || w < 8 || h < 8) return false;
+  if(!jpg2rgb565(webJpg, len, webPx, JPG_SCALE_NONE)) return false;
+  static uint8_t line[LCD_W * 2];
+  lcdOpen(); lcdWindow(0, 24, w, h);
+  for(int y = 0; y < h; y++){ memcpy(line, webPx + (size_t)y * w * 2, w * 2); lcdSpi.writeBytes(line, w * 2); }
+  lcdClose();
+  if(h < LCD_H - 24) lcdFill(0, 24 + h, LCD_W, LCD_H - 24 - h, 0x0000);
+  return true;
+}
+bool webFetch(const String& path){
+  if(WiFi.status() != WL_CONNECTED) return false;
+  if(!webPx) webPx = (uint8_t*)ps_malloc(LCD_W * LCD_H * 2 + 64);
+  if(!webJpg) webJpg = (uint8_t*)ps_malloc(WEBJ);
+  if(!webPx || !webJpg) return false;
+  uint32_t cand[3]; int nc = 0;
+  if((uint32_t)webIp) cand[nc++] = (uint32_t)webIp;
+  uint32_t g = (uint32_t)WiFi.gatewayIP(); if(g && g != (uint32_t)webIp) cand[nc++] = g;      // on Doctor Magic the Jetson IS the gateway
+  if(hubHost.length() && (uint32_t)hubIp == 0 && (!hubFindAt || millis() - hubFindAt > 60000UL)){ hubFindAt = millis(); hubFind(); }
+  uint32_t hj = (uint32_t)hubIp; if(hj && hj != (uint32_t)webIp && hj != g) cand[nc++] = hj;
+  for(int k = 0; k < nc; k++){
+    IPAddress ip(cand[k]);
+    WiFiClient c; HTTPClient h; h.setConnectTimeout(1500); h.setTimeout(15000);
+    if(!h.begin(c, String("http://") + ip.toString() + ":8091" + path)) continue;
+    int code = h.GET(); bool good = false;
+    if(code == 200){
+      int len = h.getSize();
+      if(len > 100 && len < WEBJ){
+        WiFiClient* st = h.getStreamPtr(); int got = 0; unsigned long t = millis();
+        while(got < len && millis() - t < 8000){ int a = st->available(); if(a > 0) got += st->readBytes(webJpg + got, a < len - got ? a : len - got); else delay(2); }
+        if(got == len) good = webDraw(len);
+      }
+    }
+    h.end();
+    if(good){ webIp = ip; return true; }
+  }
+  webIp = IPAddress();
+  return false;
+}
+void webTouch(int x, int y){
+  fxNote(1500, 20);
+  if(y < 24){
+    int b = x / 53; if(b > 5) b = 5;
+    if(b == 0) webAct = "/back";
+    else if(b == 1){ kbOpen(1, ""); return; }
+    else if(b == 2){ kbOpen(4, ""); return; }
+    else if(b == 3) webAct = "/scroll?d=-1";
+    else if(b == 4) webAct = "/scroll?d=1";
+    else { webOn = false; return; }
+    webAt = 0; return;
+  }
+  webAct = "/tap?x=" + String(x) + "&y=" + String(y - 24); webAt = 0;      // a finger on the page clicks there
+}
+void webLoop(){
+  if(!webOn || kbOn) return;
+  if(millis() - lastTouch > 600000UL){ webOn = false; lcdShown = ""; lcdDraw(true); return; }      // 10 quiet minutes: back to the buttons
+  if(webAt && millis() - webAt < (webErr ? 10000UL : 5000UL)) return;      // the page is looked at again every 5 seconds
+  String act = webAct; webAct = "";
+  if(!webAt){ lcdFill(0, 0, LCD_W, 24, rgb(6, 14, 40)); lcdText(8, 0, "LOADING...", rgb(255, 220, 90), rgb(6, 14, 40), 1); }
+  webAt = millis(); if(!webAt) webAt = 1;
+  bool ok = webFetch(act.length() ? act : String("/shot"));
+  if(!ok){
+    if(!webErr || act.length()){
+      lcdFill(0, 24, LCD_W, LCD_H - 24, 0x0000);
+      lcdText(10, 60, WiFi.status() == WL_CONNECTED ? "NO PAGE FROM JETSON" : "NO WI-FI", 0xFFFF, 0x0000, 1);
+      lcdText(10, 100, "Is the Jetson on, with", rgb(200, 210, 230), 0x0000, 1);
+      lcdText(10, 128, "Mary Web started?", rgb(200, 210, 230), 0x0000, 1);
+      lcdText(10, 170, "Tap X to go back.", rgb(200, 210, 230), 0x0000, 1);
+    }
+    webErr = true;
+  } else webErr = false;
+  webBar();
+}
+// ---- songs and photos from the SD card (black box: SD card slot on pins 38 40 39)
+String songName(int k){
+  if(k < 0 || k >= sdSongN) return String("MUSIC ON");
+  String n = sdSong[k]; int a = n.lastIndexOf('/'); if(a >= 0) n = n.substring(a + 1);
+  int d = n.lastIndexOf('.'); if(d > 0) n = n.substring(0, d);
+  n.replace('_', ' '); n.toUpperCase(); if(n.length() > 22) n = n.substring(0, 22);
+  return n;
+}
+void sdScanDir(const char* dir){
+#if HAS_SD
+  File d = SD_MMC.open(dir); if(!d) return;
+  if(!d.isDirectory()){ d.close(); return; }
+  File f = d.openNextFile();
+  while(f){
+    String p = f.path(); bool isDir = f.isDirectory(); f.close();
+    String base = p.substring(p.lastIndexOf('/') + 1), low = p; low.toLowerCase();
+    if(!isDir && !base.startsWith(".")){
+      if(low.endsWith(".mp3") && sdSongN < 60) sdSong[sdSongN++] = p;
+      else if((low.endsWith(".jpg") || low.endsWith(".jpeg")) && low != "/mary.jpg" && sdPicN < 60) sdPic[sdPicN++] = p;
+    }
+    f = d.openNextFile();
+  }
+  d.close();
+#endif
+}
+void maryLoad(){                                                  // mary.jpg on the SD card becomes Mary's face
+  int len = 0; uint8_t* j = sdJpg(String("/mary.jpg"), len); if(!j) return;
+  int ow = 0, oh = 0; uint8_t* px = jpgDecodeFit(j, len, 100, 100, ow, oh); free(j);
+  if(!px) return;
+  maryBig = (uint16_t*)ps_malloc(100 * 100 * 2); maryFace = (uint16_t*)ps_malloc(36 * 36 * 2);
+  if(maryBig && maryFace){
+    int s = ow < oh ? ow : oh, x0 = (ow - s) / 2, y0 = (oh - s) / 4;      // a square from the middle, a bit high (that is where faces are)
+    for(int y = 0; y < 100; y++) for(int x = 0; x < 100; x++){ const uint8_t* q = px + ((size_t)(y0 + y * s / 100) * ow + (x0 + x * s / 100)) * 2; maryBig[y * 100 + x] = (uint16_t)((q[0] << 8) | q[1]); }
+    for(int y = 0; y < 36; y++) for(int x = 0; x < 36; x++) maryFace[y * 36 + x] = maryBig[(y * 100 / 36) * 100 + x * 100 / 36];
+  } else {
+    if(maryBig) free(maryBig); if(maryFace) free(maryFace); maryBig = NULL; maryFace = NULL;
+  }
+  free(px);
+}
+#if HAS_SD
+class MuOut : public AudioOutput {                                 // the song decoder hands its sound to the box's speaker, made into 16000 a second
+ public:
+  uint32_t ph = 0; int32_t acc = 0; int cnt = 0;
+  virtual bool begin(){ ph = 0; acc = 0; cnt = 0; return true; }
+  virtual bool stop(){ return true; }
+  virtual bool ConsumeSample(int16_t sample[2]){
+    if(!muBuf) return true;
+    if((uint32_t)(muH - muT) > (uint32_t)(MU_N - 8)) return false;      // full: the decoder waits a moment
+    int v = channels == 2 ? ((int)sample[0] + (int)sample[1]) / 2 : (int)sample[0];
+    acc += v; cnt++; ph += AU_RATE;
+    uint32_t hz = hertz ? hertz : 44100;
+    if(ph >= hz){
+      int o = cnt ? (int)(acc / cnt) : 0; acc = 0; cnt = 0;
+      while(ph >= hz){ ph -= hz; muBuf[muH & (MU_N - 1)] = (int16_t)o; muH++; }
+    }
+    return true;
+  }
+};
+MuOut* muOut = NULL; AudioGeneratorMP3* mp3 = NULL; AudioFileSourceFS* mpSrc = NULL;
+void mpStop(){ if(mp3){ mp3->stop(); delete mp3; mp3 = NULL; } if(mpSrc){ delete mpSrc; mpSrc = NULL; } }
+void sdTask(void* arg){                                           // plays the MP3 songs, one after another, by itself
+  for(;;){
+    bool want = musicOn && sdSongN > 0;
+    if(!want){ if(mp3) mpStop(); vTaskDelay(50 / portTICK_PERIOD_MS); continue; }
+    if(sdWant >= 0){ sdCur = sdWant % sdSongN; sdWant = -1; mpStop(); muT = muH; }
+    if(!mp3){
+      mpSrc = new AudioFileSourceFS(SD_MMC, sdSong[sdCur].c_str());
+      mp3 = new AudioGeneratorMP3();
+      if(!mp3->begin(mpSrc, muOut)){ mpStop(); sdCur = (sdCur + 1) % sdSongN; vTaskDelay(300 / portTICK_PERIOD_MS); continue; }
+    }
+    if(!mp3->isRunning() || !mp3->loop()){ mpStop(); sdCur = (sdCur + 1) % sdSongN; }
+    vTaskDelay(1);
+  }
+}
+#endif
+void sdStart(){
+#if HAS_SD
+  if(board != 2) return;                                          // only the black 2.8 inch box has the SD card slot wired this way
+  SD_MMC.setPins(38, 40, 39);
+  if(!SD_MMC.begin("/sdcard", true)){ Serial.println("No SD card."); return; }
+  sdOk = true;
+  sdScanDir("/"); sdScanDir("/music"); sdScanDir("/photos"); sdScanDir("/Music"); sdScanDir("/Photos");
+  Serial.printf("SD card: %d songs, %d photos\n", sdSongN, sdPicN);
+  maryLoad();
+  if(sdSongN && psramFound()){
+    muBuf = (int16_t*)ps_malloc(MU_N * 2);
+    if(muBuf){ muOut = new MuOut(); xTaskCreatePinnedToCore(sdTask, "songs", 12288, NULL, 1, NULL, 0); }
+    else sdSongN = 0;
+  } else sdSongN = 0;
+#endif
+}
+// ---- Mary's words are ready: on the screen, and the light switches right away
+void aiShow(){
+  hubAns = aiText; ansPg = 0; hubWait = false;
+  if(aiCmd.length()){
+    for(int i = 0; i < NREL; i++){
+      if(pins[i] < 0) continue;
+      bool light = nameHas(i, "LIGHT") || nameHas(i, "LAMP");
+      if(aiCmd == "LIGHT ON" && light){ doCommand(String(i + 1) + " on"); break; }
+      if(aiCmd == "LIGHT OFF" && light){ doCommand(String(i + 1) + " off"); break; }
+      if(aiCmd == "GARAGE" && isDoor(i)){ doCommand(String(i + 1) + " pulse"); break; }
+    }
+    aiCmd = "";
+  }
+  if(asleep) lcdSleep(false);
+}
+
+
 void loop(){
   wifiLoop();
   bzLoop();
   tpLoop();
-  if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && !camOn && drainWet != 1 && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
+  if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && !camOn && !kbOn && !webOn && !wfOn && !phOn && drainWet != 1 && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
   web.handleClient();
   subLoop();
   hubLoop();
   peerLoop();
   drainLoop();
+  webLoop();
+  phLoop();
+  if(wfOn && wfN < 0 && !kbOn){ if(apUp) WiFi.mode(WIFI_AP_STA); scanWifi(); lcdDraw(true); }      // the Wi-Fi page: look for Wi-Fi
+  if(aiState == 4 && !txtDone){ txtDone = true; aiShow(); }       // Mary's words are ready: show them and switch the light NOW, her voice comes a moment later
   if(aiState == 3){                                               // Mary's answer is ready
-    hubAns = aiText; ansPg = 0; hubWait = false;
-    if(aiCmd.length()){
-      for(int i = 0; i < NREL; i++){
-        if(pins[i] < 0) continue;
-        bool light = nameHas(i, "LIGHT") || nameHas(i, "LAMP");
-        if(aiCmd == "LIGHT ON" && light){ doCommand(String(i + 1) + " on"); break; }
-        if(aiCmd == "LIGHT OFF" && light){ doCommand(String(i + 1) + " off"); break; }
-        if(aiCmd == "GARAGE" && isDoor(i)){ doCommand(String(i + 1) + " pulse"); break; }
-      }
-    }
+    if(!txtDone) aiShow();
+    txtDone = false;
     if(vN > 0){ vPos = 0; vPlay = true; }
     aiCmd = ""; aiState = 0; lastTouch = millis(); if(asleep) lcdSleep(false);
   }
