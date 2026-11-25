@@ -1,4 +1,6 @@
-// AMYRELAY_VERSION 5.2   (the build names the files with this number)
+// AMYRELAY_VERSION 5.3   (the build names the files with this number)
+// 5.3 MARY'S MAGIC BOX: Wi-Fi bars at the top, plain words when Wi-Fi fails (TOO WEAK, WRONG PASSWORD, NOT FOUND),
+//     Mary's Wi-Fi built in, the secret code is not needed, joins the strongest Mary Wi-Fi it can hear.
 // 5.2 MARY TALKS (black 2.8 inch box): tap Mary's face at the bottom, HOLD the TALK button and speak, let go.
 //     Mary answers on the screen and out loud in a natural voice (free Google Gemini AI - paste the key on the
 //     setup page, part 7). Say "turn the light on" / "light off" / "open the garage" and she does it.
@@ -55,7 +57,7 @@ struct GRead { WiFiClientSecure* c; bool chunked; long left; uint8_t b[1024]; in
 #define NREL 4
 #define BOOT_PIN 0
 static const char HOST[] = "ntfy.sh";
-static const char AP_NAME[] = "Mary-Box-Setup";
+static const char AP_NAME[] = "Mary-Magic-Box";
 // The two root certificates of Let's Encrypt (ISRG Root X1 and X2). With them the box knows it is really talking to ntfy.sh.
 static const char ROOTS[] =
   "-----BEGIN CERTIFICATE-----\n"
@@ -293,11 +295,27 @@ void subLoop(){
 }
 
 // ------------------------------------------------------------ Wi-Fi: your network, or the box's own setup Wi-Fi
+int tgtRssi = -127;                                              // how strong Mary's Wi-Fi was at the last look (-127 = not heard)
+int tgtCh = 0; uint8_t tgtBss[6]; volatile int wReason = 0;      // the strongest one heard, and why the last try failed
+int barsOf(int r){ return r >= -60 ? 4 : r >= -67 ? 3 : r >= -75 ? 2 : r >= -85 ? 1 : 0; }
+int wifiBars(){ return WiFi.status() == WL_CONNECTED ? barsOf(WiFi.RSSI()) : barsOf(tgtRssi); }
+String wifiWhy(){                                                // plain words for the bottom of the screen
+  if(WiFi.status() == WL_CONNECTED) return String("");
+  if(tgtRssi <= -127) return String("WI-FI NOT FOUND");
+  if(barsOf(tgtRssi) <= 1) return String("WI-FI TOO WEAK-MOVE");
+  if(wReason == 2 || wReason == 15 || wReason == 202 || wReason == 204) return String("WRONG WI-FI PASSWORD");
+  return String("Looking for Wi-Fi...");
+}
 void scanWifi(){
-  wifiList = "";
+  wifiList = ""; tgtRssi = -127; tgtCh = 0;
   int n = WiFi.scanNetworks();
+  for(int i = 0; i < n; i++){ String s = WiFi.SSID(i); int r = WiFi.RSSI(i);
+    if(s.length() && s == ssid && r > tgtRssi){ tgtRssi = r; tgtCh = WiFi.channel(i); memcpy(tgtBss, WiFi.BSSID(i), 6); }
+  }
   for(int i = 0; i < n && i < 14; i++){ String s = WiFi.SSID(i); if(!s.length() || wifiList.indexOf("\"" + esc(s) + "\"") >= 0) continue;
-    wifiList += "<option value=\"" + esc(s) + "\"" + (s == ssid ? " selected" : "") + ">" + esc(s) + "</option>"; }
+    int b = barsOf(WiFi.RSSI(i));
+    wifiList += "<option value=\"" + esc(s) + "\"" + (s == ssid ? " selected" : "") + ">" + esc(s) + (b >= 3 ? " (strong)" : b == 2 ? " (OK)" : " (weak)") + "</option>"; }
+  WiFi.scanDelete();
 }
 void startAP(){
   if(apUp) return;
@@ -317,15 +335,17 @@ void stopAP(){
 }
 void startSTA(){
   stopAP();
-  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.setHostname("amy-box");
-  WiFi.begin(ssid.c_str(), pass.c_str());
+  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.setHostname("amy-box"); WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  scanWifi();                                                     // listen first: pick the strongest Mary Wi-Fi and remember how strong it is
+  wReason = 0;
+  if(tgtCh) WiFi.begin(ssid.c_str(), pass.c_str(), tgtCh, tgtBss); else WiFi.begin(ssid.c_str(), pass.c_str());
   staTryAt = millis(); wifiLostAt = millis();
   Serial.print("Joining Wi-Fi: "); Serial.println(ssid);
 }
 void wifiLoop(){
   if(apUp){
     dns.processNextRequest();
-    if(ssid.length() && millis() - apSince > 180000UL && WiFi.softAPgetStationNum() == 0) startSTA();      // nobody is using the setup page: try the saved Wi-Fi again
+    if(ssid.length() && millis() - apSince > 90000UL && WiFi.softAPgetStationNum() == 0) startSTA();      // nobody is using the setup page: try the saved Wi-Fi again
     return;
   }
   if(WiFi.status() == WL_CONNECTED){
@@ -6178,6 +6198,7 @@ uint16_t mix(uint16_t a, uint16_t b, int k){                     // k = 0: all a
   int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31, br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
   return (uint16_t)((((ar * (255 - k) + br * k) / 255) << 11) | (((ag * (255 - k) + bg * k) / 255) << 5) | ((ab * (255 - k) + bb * k) / 255));
 }
+void cvBox(int x, int y, int w, int h, uint16_t c){ for(int yy = (y < cvY0 ? cvY0 : y); yy < y + h && yy < cvY0 + cvHh; yy++) for(int xx = (x < 0 ? 0 : x); xx < x + w && xx < LCD_W; xx++) CV[(yy - cvY0) * LCD_W + xx] = c; }
 void cvBand(int y0, int h){ cvY0 = y0; cvHh = h; for(int y = 0; y < h; y++) for(int x = 0; x < LCD_W; x++) CV[y * LCD_W + x] = pgm_read_word(&BG[(y0 + y) * LCD_W + x]); }
 void cvFlush(){
   if(!lcdOn) return;
@@ -6388,10 +6409,13 @@ void paintScene(){                                                 // paints wha
     paintJet();
     foot = hubWait ? String("MARY IS THINKING...") : hubPhone.length() ? (hubPhone.length() <= 15 ? String("PHONE ") + hubPhone : hubPhone) : hubInfo.length() ? hubInfo : String("TAP EXIT TO GO BACK");
   } else {
-    cvText(8, 3, "LET THERE BE LIGHT", 0xFFFF, 1);
-    cvText(LCD_W - 6 - (int)net.length() * FW, 3, net.c_str(), net == "READY" ? rgb(140, 255, 170) : rgb(255, 214, 90), 1);
+    cvText(8, 3, "MARY'S MAGIC BOX", 0xFFFF, 1);
+    int nx = LCD_W - 6 - (int)net.length() * FW, wb = wifiBars();
+    cvText(nx, 3, net.c_str(), net == "READY" ? rgb(140, 255, 170) : rgb(255, 214, 90), 1);
+    for(int i = 0; i < 4; i++)                                     // the Wi-Fi bars
+      cvBox(nx - 26 + i * 6, 24 - (i + 1) * 5, 4, (i + 1) * 5, i < wb ? (wb >= 3 ? rgb(120, 255, 150) : wb == 2 ? rgb(255, 214, 90) : rgb(255, 90, 90)) : rgb(70, 80, 100));
     for(int i = 0; i < 6; i++) drawTile(i);
-    foot = (!apUp && gKey.length() && WiFi.status() == WL_CONNECTED) ? String("TAP ME TO TALK") : apUp ? (String("Join Wi-Fi ") + AP_NAME) : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("Looking for Wi-Fi..."));
+    foot = (!apUp && gKey.length() && WiFi.status() == WL_CONNECTED) ? String("TAP ME TO TALK") : apUp ? (((millis() / 3000) & 1) && ssid.length() ? wifiWhy() : String("SETUP: ") + AP_NAME) : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : wifiWhy());
   }
   if(msgUntil && (long)(msgUntil - millis()) > 0) foot = msgText;
   cvGlass(0, 204, LCD_W, 36, 0, rgb(6, 14, 40), 160, 0);
@@ -6403,7 +6427,7 @@ void paintScene(){                                                 // paints wha
 void lcdDraw(bool force){
   if(!lcdOn) return;
   bool msgOn = msgUntil && (long)(msgUntil - millis()) > 0;
-  String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet);
+  String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet) + "|" + String(wifiBars()) + wifiWhy() + String(WiFi.status() == WL_CONNECTED ? 0 : (int)((millis() / 3000) & 1));
   if(camOn) return;                                               // the drain picture is on the screen
   key += "|d" + String(drainWet) + String(drainTile(2) ? 1 : 0);
   key += "|m" + String(aiState) + String(vPlay ? (int)((millis() / 180) & 1) : 2);
@@ -6692,7 +6716,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary Box 5.1. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 5.3. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 void tpLoop(){
@@ -6793,7 +6817,7 @@ String page(const String& note){
     ".big{display:block;text-align:center;text-decoration:none;padding:18px;font-size:20px;font-weight:900;letter-spacing:3px;color:#2a1600;border-radius:12px;background:linear-gradient(180deg,#ffd35a,#e29400 55%,#9a5c00);box-shadow:0 6px 0 #4a2a00,0 0 30px #ffb21e88}"
     "small{color:#8fb9c9}.pin{width:23%;display:inline-block;margin-right:1%}.ok{color:#33ff9a}.no{color:#ffb37d}</style>"
     "<script>var AC;function bp(){try{AC=AC||new AudioContext();var t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.frequency.setValueAtTime(1500,t);o.frequency.exponentialRampToValueAtTime(600,t+.08);g.gain.setValueAtTime(.15,t);g.gain.exponentialRampToValueAtTime(.0001,t+.1);o.start(t);o.stop(t+.11)}catch(e){}}document.addEventListener('pointerdown',function(e){if(e.target.closest('button,a'))bp()})</script>"
-    "</head><body><h2><span class=emb></span>Mary Box</h2>");
+    "</head><body><h2><span class=emb></span>Mary&#39;s Magic Box</h2>");
   if(WiFi.status() == WL_CONNECTED) h += "<a class=big href=/hub>&#9889; OPEN MOTO HUB</a>";
   if(note.length()) h += "<div class=card><b>" + note + "</b></div>";
   h += "<div class=card>Wi-Fi: ";
@@ -6804,7 +6828,7 @@ String page(const String& note){
   h += "</div><form method=post action=/save><div class=card><b>1. Your Wi-Fi</b> <small>(2.4 GHz)</small><select name=ssid><option value=''>pick it here...</option>";
   h += wifiList;
   h += "</select><input name=ssid2 placeholder='...or type the Wi-Fi name' autocapitalize=off autocomplete=off><input name=pass placeholder='Wi-Fi password' value=\"" + esc(pass) + "\" autocapitalize=off autocomplete=off></div>";
-  h += "<div class=card><b>2. Secret code from Mary</b><br><small>In Mary: 3 dots &gt; Remote switches &gt; Copy code. Then hold your finger here and tap Paste.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
+  h += "<div class=card><b>2. Secret code (you can SKIP this)</b><br><small>Only needed to switch from far away. Leave it empty if you do not have it.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<div class=card><b>3. Relay pins</b> <small>(-1 = not used)</small><br>";
   for(int i = 0; i < NREL; i++) h += "<input class=pin type=number name=p" + String(i + 1) + " value=" + String(pins[i]) + ">";
   h += String("<small>") + (board == 4 ? "On the small board use 26, 27, 25, 32, 33, 18, 19 or 23 (21 and 22 run the tiny screen). A short press on its BOOT button flips switch 1." : board == 3 ? "On the yellow board use only 22 or 27 (the small plug marked CN1)." : board == 2 ? "On the 2.8 inch touch board use only 2, 14 or 21 (the small plug marked IO2 IO3 IO14 IO21)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
@@ -6855,7 +6879,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>Mary Box 5.1 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>Mary&#39;s Magic Box 5.3 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -6863,7 +6887,9 @@ void handleSave(){
   String s = web.arg("ssid2"); s.trim(); if(!s.length()) s = web.arg("ssid");
   String c = web.arg("code"); c.trim();
   if(!s.length()){ web.send(200, "text/html", page("Pick your Wi-Fi first.")); return; }
-  if(!goodCode(c)){ web.send(200, "text/html", page("The secret code is missing or not right. Copy it in Mary and paste it here.")); return; }
+  if(!c.length()) c = code;                                       // no code typed: keep the old one (or none - the box still works at home)
+  if(c.length() && !goodCode(c)){ web.send(200, "text/html", page("That secret code is not right. Leave it empty if you do not have it.")); return; }
+  String pw = web.arg("pass"); if(!pw.length() && s == ssid) pw = pass;      // password left empty: keep the saved one
   int nb = web.arg("bd").toInt(); if(nb < 0 || nb > 2) nb = 0; if(CYD) nb = board;
   bool swap = nb != board;                                       // a different board was picked: start from that board's own pins
   int np[NREL];
@@ -6877,7 +6903,7 @@ void handleSave(){
   if(swap) nz = nb >= 2 ? -1 : 4;
   if(!goodPinFor(nz, nb)){ web.send(200, "text/html", page("Pin " + String(nz) + " cannot be used for the buzzer on this board.")); return; }
   for(int i = 0; i < NREL; i++) if(nz >= 0 && nz == np[i]){ web.send(200, "text/html", page("The buzzer cannot share pin " + String(nz) + " with a relay.")); return; }
-  prefs.putString("ssid", s); prefs.putString("pass", web.arg("pass")); prefs.putString("code", c);
+  prefs.putString("ssid", s); prefs.putString("pass", pw); prefs.putString("code", c);
   prefs.putInt("bz", nz); prefs.putBool("bf", web.arg("bf") == "1"); prefs.putBool("bc", web.arg("bc") != "0"); prefs.putInt("bd", nb);
   prefs.putInt("lr", web.arg("lr").toInt() & 3); prefs.putInt("tf", web.arg("tf").toInt() & 3); prefs.putBool("li", web.arg("li") != "0");
   for(int i = 0; i < NREL; i++) prefs.putInt((String("p") + String(i + 1)).c_str(), np[i]);
@@ -6915,10 +6941,11 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("Mary Box 5.1 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("Mary's Magic Box 5.3 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
-  ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", ""); code = prefs.getString("code", "");
+  ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", "");
+  if(!ssid.length()){ ssid = "mjcaviness2"; pass = "Shocker1"; }      // Mary's Wi-Fi is built in: nothing to type code = prefs.getString("code", "");
   for(int i = 0; i < NREL; i++){ pins[i] = prefs.getInt((String("p") + String(i + 1)).c_str(), i == 0 ? 5 : -1); if(!goodPin(pins[i])) pins[i] = -1; }
   activeLow = prefs.getBool("al", true); checkCert = prefs.getBool("cc", true);
   for(int i = 0; i < NREL; i++) nm[i] = cleanName(prefs.getString((String("n") + String(i + 1)).c_str(), ""), i);
@@ -6969,6 +6996,7 @@ void setup(){
   web.on("/hub", HTTP_GET, handleHub);
   web.on("/peers", HTTP_GET, handlePeers);
   web.onNotFound(handleOther);
+  WiFi.onEvent([](WiFiEvent_t e, WiFiEventInfo_t info){ wReason = info.wifi_sta_disconnected.reason; }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);      // remember WHY Wi-Fi failed
   if(ssid.length()) startSTA(); else startAP();
   web.begin();
 }
