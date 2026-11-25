@@ -1,4 +1,4 @@
-// AMYRELAY_VERSION 6.3   (the build names the files with this number)
+// AMYRELAY_VERSION 6.4   (the build names the files with this number)
 // 6.0: WEB has sound: while a web page is open (YouTube and the like) the Jetson sends the page's sound and the box plays it.
 // 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
 // 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
@@ -429,6 +429,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
+#define BOX_VER "6.4"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6540,6 +6541,7 @@ void paintScene(){                                                 // paints wha
   if(foot.length() > 22) foot = foot.substring(0, 22);
   if(foot.length() > 22 && jetOn && !hubWait && hubPhone.length()) foot = hubPhone.substring(0, 22);
   cvText(44, 210, foot.c_str(), 0xFFFF, 1);
+  if(!gameOn && !jetOn && foot.length() <= 18) cvText(LCD_W - 5 - 3 * FW, 210, BOX_VER, rgb(150, 165, 200), 1);      // the number of this build, small, in the corner
 }
 void lcdDraw(bool force){
   if(!lcdOn) return;
@@ -6847,7 +6849,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 6.3. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 6.4. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7837,7 +7839,8 @@ class MuOut : public AudioOutput {                                 // the song d
   }
 };
 MuOut* muOut = NULL; AudioGeneratorMP3* mp3 = NULL; AudioFileSourceFS* mpSrc = NULL; NetFifo* mpNet = NULL; AudioFileSourceBuffer* mpBuf = NULL;
-void mpStop(){ if(mp3){ mp3->stop(); delete mp3; mp3 = NULL; } if(mpBuf){ delete mpBuf; mpBuf = NULL; } if(mpNet){ delete mpNet; mpNet = NULL; } if(mpSrc){ delete mpSrc; mpSrc = NULL; } }
+bool mpBegun = false;                                             // 6.4: stopping a player that never started crashed the box (WEB with no sound from the Jetson)
+void mpStop(){ if(mp3){ if(mpBegun) mp3->stop(); mpBegun = false; delete mp3; mp3 = NULL; } if(mpBuf){ delete mpBuf; mpBuf = NULL; } if(mpNet){ delete mpNet; mpNet = NULL; } if(mpSrc){ delete mpSrc; mpSrc = NULL; } }
 void sdTask(void* arg){                                           // plays the music by itself: SD card songs one after another, or a radio station
   int fails = 0;
   for(;;){
@@ -7856,19 +7859,19 @@ void sdTask(void* arg){                                           // plays the m
       if(ws){
         String u = String("http://") + ((uint32_t)webIp ? webIp : WiFi.gatewayIP()).toString() + ":8091/web.mp3";
         mpNet = new NetFifo(u.c_str(), 3000);
-        if(mpNet->isOpen()) ok = mp3->begin(mpNet, muOut);
+        if(mpNet->isOpen()) { mpBegun = true; ok = mp3->begin(mpNet, muOut); }
         if(!ok){ mpStop(); vTaskDelay(3000 / portTICK_PERIOD_MS); continue; }      // no sound from the Jetson yet: try again in a moment
       }
       else if(bt){
         String u = String("http://") + WiFi.gatewayIP().toString() + ":8091/bt.mp3";
         mpNet = new NetFifo(u.c_str(), 3000);
-        if(mpNet->isOpen()) ok = mp3->begin(mpNet, muOut);
+        if(mpNet->isOpen()) { mpBegun = true; ok = mp3->begin(mpNet, muOut); }
         if(!ok){ mpStop(); vTaskDelay(3000 / portTICK_PERIOD_MS); continue; }      // the Jetson is not answering yet: try again in a moment
       }
-      else if(sdCur < sdSongN){ mpSrc = new AudioFileSourceFS(SD_MMC, sdSong[sdCur].c_str()); ok = mp3->begin(mpSrc, muOut); }
+      else if(sdCur < sdSongN){ mpSrc = new AudioFileSourceFS(SD_MMC, sdSong[sdCur].c_str()); if(mpSrc->isOpen()){ mpBegun = true; ok = mp3->begin(mpSrc, muOut); } }
       else if(WiFi.status() == WL_CONNECTED){
         mpNet = new NetFifo(RADIO_URL[(sdCur - sdSongN) % NRADIO], 32000);
-        if(mpNet->isOpen()) ok = mp3->begin(mpNet, muOut);
+        if(mpNet->isOpen()) { mpBegun = true; ok = mp3->begin(mpNet, muOut); }
       }
       if(!ok){ mpStop(); if(++fails >= 2){ sdCur = (sdCur + 1) % tot; fails = 0; } vTaskDelay(1500 / portTICK_PERIOD_MS); continue; }      // no luck twice: the next one
     }
