@@ -1,4 +1,8 @@
-// AMYRELAY_VERSION 5.1   (the build names the files with this number)
+// AMYRELAY_VERSION 5.2   (the build names the files with this number)
+// 5.2 MARY TALKS (black 2.8 inch box): tap Mary's face at the bottom, HOLD the TALK button and speak, let go.
+//     Mary answers on the screen and out loud in a natural voice (free Google Gemini AI - paste the key on the
+//     setup page, part 7). Say "turn the light on" / "light off" / "open the garage" and she does it.
+//     JOKE and BLESS buttons. The switches keep working while she thinks. Needs Wi-Fi with internet.
 // Mary Box: on this box the helper is called Mary (was Amy) on the screen and pages.
 // 5.1 (for Mr. Terry's garage): the DRAIN button shows the AC drain pan from the Moto Drain Watch board
 //     (green DRY / red WATER). Tap it: the drain camera picture fills the screen (tap again to go back).
@@ -101,6 +105,10 @@ WiFiClientSecure sub;                       // the line that stays open: Amy's c
 
 String ssid, pass, code, wifiList, line, reportTag;
 int pins[NREL] = {5, -1, -1, -1};
+void aiTask(void* arg);
+String gKey = "", gTalk = "gemini-flash-lite-latest", gVoice = "gemini-2.5-flash-preview-tts";      // Mary's AI (Google Gemini, free key)
+volatile int aiState = 0; volatile bool aiRec = false; volatile bool vPlay = false; volatile int vN = 0, vPos = 0, recN = 0;      // 0 idle 1 listening 2 thinking 3 answer ready
+String aiQ = "", aiText = "", aiCmd = ""; int16_t *recL = NULL, *recR = NULL, *vBuf = NULL; int micPin = 0; bool micOk = false;
 String drainIp = ""; int drainWet = -1; unsigned long drainSeen = 0, drainAlarmAt = 0, camAt = 0, camOpened = 0; bool camOn = false;
 int bzPin = 4, board = 0;                   // buzzer pin (-1 = no buzzer).   board: 0 = plain ESP32-S3, no screen    1 = red MaTouch with the 2.8 inch screen
 bool bzFlip = false, bzClick = true, bzAlarm = false, saidReady = false, lcdOn = false;
@@ -6071,12 +6079,13 @@ void auFill(int16_t* buf, int n){                                // makes the ne
         muPh += muInc; muPh3 += muInc + (muInc >> 8); muPh2 += muInc >> 1; }
       muLeft--;
     }
+    if(vPlay){ if(vPos < vN) s += vBuf[vPos++]; else vPlay = false; }      // Mary's voice
     if(s > 32000) s = 32000; if(s < -32000) s = -32000;
     buf[2 * i] = (int16_t)s; buf[2 * i + 1] = (int16_t)s;
   }
   fxBusy = fxLeft > 0 || cp != NULL ? 1 : 0;
 }
-bool auActive(){ return musicOn || !fxIdle() || clipNew; }
+bool auActive(){ return musicOn || !fxIdle() || clipNew || vPlay; }
 void auTask(void* arg){                                          // runs by itself beside everything else, so sound never waits for the Wi-Fi
   static int16_t buf[512]; bool amp = false; int quiet = 0;
   for(;;){
@@ -6120,7 +6129,7 @@ void auInit(){                                                   // start the so
 #endif
   pinMode(1, OUTPUT); digitalWrite(1, HIGH);
   i2s_config_t cfg; memset(&cfg, 0, sizeof(cfg));
-  cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+  cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | (board == 2 ? I2S_MODE_RX : 0));
   cfg.sample_rate = AU_RATE;
   cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
   cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
@@ -6146,6 +6155,7 @@ void auInit(){                                                   // start the so
   if(d != 6 && d != 8){ int f6 = floatScore(6), f8 = floatScore(8); d = f6 > f8 ? 6 : 8; }      // the free wire is the one that goes INTO the chip = the speaker wire
   spkUsed = d;
   pc.mck_io_num = I2S_PIN_NO_CHANGE; pc.bck_io_num = I2S_PIN_NO_CHANGE; pc.ws_io_num = I2S_PIN_NO_CHANGE; pc.data_out_num = d;
+  if(board == 2){ micPin = d == 8 ? 6 : 8; pc.data_in_num = micPin; micOk = true; }      // the microphone comes in on the other data wire
   i2s_set_pin(I2S_NUM_0, &pc);
   spk = true;
   xTaskCreatePinnedToCore(auTask, "sound", 6144, NULL, 3, NULL, 1);
@@ -6249,6 +6259,7 @@ void hubHello(){
   hubWait = jsonField(b, "w") == "1"; hubInfo = jsonField(b, "i"); hubPhone = jsonField(b, "p");
 }
 void hubLoop(){
+  if(gKey.length()) return;                                       // Mary talks through Google: no Jetson needed
   if(!hubHost.length() || apUp || WiFi.status() != WL_CONNECTED || !lpw.length()) return;
   unsigned long gap = jetOn ? (hubWait ? 1500UL : 3000UL) : 20000UL;
   if(hubAt && millis() - hubAt < gap) return;
@@ -6273,25 +6284,45 @@ int ansLines(String* L, int max){                                   // Amy's ans
 }
 static const char* JQ[3] = {"Say hello to Moto in one short friendly sentence.", "Tell Moto one short clean joke.", "Give Moto one short tip to keep going today."};
 static const char* JB[5] = {"HELLO", "JOKE", "BOOST", "NEXT", "EXIT"};
+static const char* MB[5] = {"TALK", "JOKE", "BLESS", "NEXT", "EXIT"};
+static const char* MQ[3] = {"", "Tell Mr. Terry one short, clean, funny joke.", "Share one short encouraging Bible verse (King James) with Mr. Terry and one warm sentence about it."};
+void aiAskText(const char* q){ if(aiState != 0) return; aiQ = q; recN = 0; hubAns = ""; ansPg = 0; aiState = 2; }
 void jetTap(int i){
   fxNote(1500, 30);
+  if(gKey.length()){
+    if(i == 4){ jetOn = false; vPlay = false; return; }
+    if(i == 3){ String L[24]; int n = ansLines(L, 24); ansPg = (ansPg + 1) * 4 < n ? ansPg + 1 : 0; return; }
+    if(i == 0){ if(aiState == 0 && recL){ vPlay = false; recN = 0; aiRec = true; aiState = 1; hubAns = ""; ansPg = 0; } return; }      // hold TALK and speak
+    if(i == 1 || i == 2){ vPlay = false; aiAskText(MQ[i]); }
+    return;
+  }
   if(i == 4){ jetOn = false; return; }
   if(i == 3){ String L[24]; int n = ansLines(L, 24); ansPg = (ansPg + 1) * 4 < n ? ansPg + 1 : 0; return; }
   if(i >= 0 && i < 3){ hubAns = ""; ansPg = 0; hubAsk(JQ[i]); }
 }
 void paintJet(){
-  cvText(8, 3, "MARY AI", rgb(255, 220, 90), 1);
-  String st = !hubHost.length() ? String("NO JETSON SET") : hubOk ? String("JETSON OK") : String("NO JETSON");
-  cvText(LCD_W - 6 - (int)st.length() * FW, 3, st.c_str(), hubOk ? rgb(140, 255, 170) : rgb(255, 150, 150), 1);
+  bool mary = gKey.length() > 0;
+  cvText(8, 3, mary ? "MARY" : "MARY AI", rgb(255, 220, 90), 1);
+  String st = mary ? (aiState == 1 ? String("LISTENING") : aiState == 2 ? String("THINKING") : vPlay ? String("TALKING") : String("READY"))
+                   : (!hubHost.length() ? String("NO JETSON SET") : hubOk ? String("JETSON OK") : String("NO JETSON"));
+  bool good = mary ? true : hubOk;
+  cvText(LCD_W - 6 - (int)st.length() * FW, 3, st.c_str(), good ? rgb(140, 255, 170) : rgb(255, 150, 150), 1);
   cvGlass(4, 33, LCD_W - 8, 106, 12, rgb(14, 34, 84), 170, 0);
   String L[24]; int n = ansLines(L, 24);
-  if(!n) cvText(14, 38, hubWait ? "Mary is thinking..." : "Tap a button to ask Mary", rgb(200, 210, 230), 1);
+  if(!n){
+    if(mary && aiState == 1){ cvText(14, 38, "I'm listening...", rgb(255, 230, 120), 1); cvText(14, 63, "Let go when you're done", rgb(200, 210, 230), 1); }
+    else if(mary && aiState == 2) cvText(14, 38, "Mary is thinking...", rgb(200, 210, 230), 1);
+    else if(mary){ cvText(14, 38, "HOLD TALK and speak.", rgb(200, 210, 230), 1); cvText(14, 63, "Let go when done.", rgb(200, 210, 230), 1); }
+    else cvText(14, 38, hubWait ? "Mary is thinking..." : "Tap a button to ask Mary", rgb(200, 210, 230), 1);
+  }
   for(int k = 0; k < 4; k++){ int j = ansPg * 4 + k; if(j < n) cvText(10, 37 + k * 25, L[j].c_str(), 0xFFFF, 1); }
   for(int i = 0; i < 5; i++){
     int x = 2 + i * 63;
     cvGlass(x + 2, 151, 59, 47, 10, 0x0000, 140, 1);
-    cvGlass(x, 146, 59, 47, 10, i == 4 ? rgb(225, 50, 60) : i == 3 ? rgb(60, 100, 170) : rgb(20, 170, 150), 190, 0);
-    cvText(x + (59 - (int)strlen(JB[i]) * FW) / 2, 158, JB[i], 0xFFFF, 1);
+    const char* lb = mary ? MB[i] : JB[i];
+    uint16_t tc = i == 4 ? rgb(225, 50, 60) : i == 3 ? rgb(60, 100, 170) : (mary && i == 0) ? (aiState == 1 ? rgb(255, 196, 40) : rgb(230, 80, 150)) : rgb(20, 170, 150);
+    cvGlass(x, 146, 59, 47, 10, tc, 190, 0);
+    cvText(x + (59 - (int)strlen(lb) * FW) / 2, 158, lb, 0xFFFF, 1);
   }
 }
 // two pages of six buttons, never hidden.  Page 1: switch 1 2 3, switch 4 (buzzer), MUSIC, MORE.   Page 2: GAME, SLEEP, CAMERA, AI, LOUD, BACK.
@@ -6354,11 +6385,11 @@ void paintScene(){                                                 // paints wha
     cvText(8, 3, "LET THERE BE LIGHT", 0xFFFF, 1);
     cvText(LCD_W - 6 - (int)net.length() * FW, 3, net.c_str(), net == "READY" ? rgb(140, 255, 170) : rgb(255, 214, 90), 1);
     for(int i = 0; i < 6; i++) drawTile(i);
-    foot = apUp ? (String("Join Wi-Fi ") + AP_NAME) : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("Looking for Wi-Fi..."));
+    foot = (!apUp && gKey.length() && WiFi.status() == WL_CONNECTED) ? String("TAP ME TO TALK") : apUp ? (String("Join Wi-Fi ") + AP_NAME) : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("Looking for Wi-Fi..."));
   }
   if(msgUntil && (long)(msgUntil - millis()) > 0) foot = msgText;
   cvGlass(0, 204, LCD_W, 36, 0, rgb(6, 14, 40), 160, 0);
-  cvSprite(3, 204, IC_GIRL);
+  cvSprite(3, 204 - ((vPlay && ((millis() / 180) & 1)) ? 3 : 0), IC_GIRL);      // Mary moves while she talks
   if(foot.length() > 22) foot = foot.substring(0, 22);
   if(foot.length() > 22 && jetOn && !hubWait && hubPhone.length()) foot = hubPhone.substring(0, 22);
   cvText(44, 210, foot.c_str(), 0xFFFF, 1);
@@ -6369,6 +6400,7 @@ void lcdDraw(bool force){
   String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet);
   if(camOn) return;                                               // the drain picture is on the screen
   key += "|d" + String(drainWet) + String(drainTile(2) ? 1 : 0);
+  key += "|m" + String(aiState) + String(vPlay ? (int)((millis() / 180) & 1) : 2);
   if(jetOn){ key += "|j" + String(hubOk) + String(hubWait) + String(ansPg) + hubAns + hubInfo + hubPhone; }
   if(gameOn){ key += "|g"; for(int i = 0; i < 9; i++) key += String((int)gb[i]); key += String(gWin); }
   if(!force && key == lcdShown) return;
@@ -6675,10 +6707,11 @@ void tpLoop(){
       else if(x >= 67 && x < 256 && y >= 34 && y < 202) gTap((x - 67) / 63 + ((y - 34) / 56) * 3);
     }
     else if(jetOn){ if(y >= 140 && y < 204){ int i = x / 64; if(i > 4) i = 4; jetTap(i); } }
-    else if(y >= 204 && x < 60 && hubHost.length()){ jetOn = true; ansPg = 0; hubAt = 0; fxNote(1500, 30); }      // Amy's face at the bottom: the Amy AI page
+    else if(y >= 204 && x < 60 && (hubHost.length() || gKey.length())){ jetOn = true; ansPg = 0; hubAt = 0; fxNote(1500, 30); }      // Amy's face at the bottom: the Amy AI page
     else if(y >= 31 && y < 203){ int i = (x < 108 ? 0 : (x < 213 ? 1 : 2)) + (y < 117 ? 0 : 3); tileTap(i); }
     lcdDraw(false);
   }
+  if(!down && tpDown && aiRec) aiRec = false;                    // finger off TALK: Mary stops listening
   tpDown = down;
 }
 
@@ -6809,6 +6842,8 @@ String page(const String& note){
   h += ">Colors: way 2</option></select><select name=tf>";
   for(int i = 0; i < 4; i++){ h += "<option value=" + String(i) + (tpFlip == i ? " selected" : "") + ">Touch " + String(i + 1) + "</option>"; }
   h += "</select></div>";
+  h += "<div class=card><b>7. Mary talks (free Google Gemini key)</b> <small>(get it free at aistudio.google.com/apikey and paste it here. Empty = Mary does not talk.)</small><input name=gk value=\"" + esc(gKey) + "\" autocapitalize=off autocomplete=off placeholder='AIza...'>"
+       "<small>Talk model</small><input name=gm value=\"" + esc(gTalk) + "\" autocapitalize=off><small>Voice model</small><input name=gv value=\"" + esc(gVoice) + "\" autocapitalize=off></div>";
   h += "<div class=card><b>6. Jetson hub</b> <small>(your Jetson's name or number. Empty = off.)</small><input name=jh value=\"" + esc(hubHost) + "\" autocapitalize=off autocomplete=off><small>Jetson: " + String(hubHost.length() ? (hubOk ? "<span class=ok>connected</span>" : "<span class=no>not found yet</span>") : "off") + "</small><br><b>Moto Hub password</b> <small>(phones and the Jetson need it. Phone page: http://" + WiFi.localIP().toString() + "/hub)</small><input name=lp value=\"" + esc(lpw) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<button>Save and restart</button></form><div class=card><b>Test</b> <small>(you should hear a click or a beep)</small>";
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
@@ -6844,6 +6879,9 @@ void handleSave(){
   for(int i = 0; i < NREL; i++) if(web.hasArg("n" + String(i + 1))) prefs.putString((String("n") + String(i + 1)).c_str(), cleanName(web.arg("n" + String(i + 1)), i));
   if(web.hasArg("lp")){ String j = web.arg("lp"); j.trim(); if(j.length() >= 4) prefs.putString("lp", j); }
   if(web.hasArg("jh")){ String j = web.arg("jh"); j.trim(); prefs.putString("jh", j); }
+  if(web.hasArg("gk")){ String j = web.arg("gk"); j.trim(); prefs.putString("gk", j); }
+  if(web.hasArg("gm")){ String j = web.arg("gm"); j.trim(); if(j.length()) prefs.putString("gm", j); }
+  if(web.hasArg("gv")){ String j = web.arg("gv"); j.trim(); if(j.length()) prefs.putString("gv", j); }
   if(web.hasArg("vo")){ int v = web.arg("vo").toInt(); prefs.putInt("vo", v < 1 || v > 3 ? 2 : v); }
   if(web.hasArg("sd")){ int v = web.arg("sd").toInt(); prefs.putInt("sd", v == 6 || v == 8 ? v : 0); }
   web.send(200, "text/html", String("<meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:Arial;background:#11151b;color:#eee;padding:20px;font-size:19px'><h2>Saved.</h2>"
@@ -6878,6 +6916,10 @@ void setup(){
   for(int i = 0; i < NREL; i++){ pins[i] = prefs.getInt((String("p") + String(i + 1)).c_str(), i == 0 ? 5 : -1); if(!goodPin(pins[i])) pins[i] = -1; }
   activeLow = prefs.getBool("al", true); checkCert = prefs.getBool("cc", true);
   for(int i = 0; i < NREL; i++) nm[i] = cleanName(prefs.getString((String("n") + String(i + 1)).c_str(), ""), i);
+  gKey = prefs.getString("gk", ""); gKey.trim(); gTalk = prefs.getString("gm", gTalk); gVoice = prefs.getString("gv", gVoice);
+  if(psramFound()){ recL = (int16_t*)ps_malloc(16000 * 8 * 2); recR = (int16_t*)ps_malloc(16000 * 8 * 2); vBuf = (int16_t*)ps_malloc(16000 * 40 * 2); }
+  if(!recL || !recR || !vBuf) gKey = "";                         // no big memory on this board: Mary does not talk here
+  else xTaskCreatePinnedToCore(aiTask, "mary", 16384, NULL, 1, NULL, 0);
   hubHost = prefs.getString("jh", "moto-desktop.local"); hubHost.trim(); lpw = prefs.getString("lp", "04170417");
   volSet = prefs.getInt("vo", 2); if(volSet < 1 || volSet > 3) volSet = 2;
   spkPin = prefs.getInt("sd", 0); if(spkPin != 6 && spkPin != 8) spkPin = 0;
@@ -6924,6 +6966,132 @@ void setup(){
   if(ssid.length()) startSTA(); else startAP();
   web.begin();
 }
+// ---- Mary talks: hold TALK and speak; Google Gemini hears it and answers; a second call turns the answer into a natural voice
+static const char B64C[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+String jesc(const String& t){ String o; for(unsigned int i = 0; i < t.length(); i++){ char c = t.charAt(i); if(c == '"' || c == '\\'){ o += '\\'; o += c; } else if(c == '\n') o += "\\n"; else if((uint8_t)c >= 32) o += c; } return o; }
+String sysText(){
+  String n = ""; for(int i = 0; i < NREL; i++) if(pins[i] >= 0){ if(n.length()) n += ", "; n += nm[i]; }
+  return "You are Mary, a kind, warm, cheerful helper living in a touch-screen box in Mr. Terry's garage in Wichita, Kansas. Terry and his wife are older people. "
+         "Answer in one to three short, friendly sentences with plain words. No lists, no symbols, no emojis. The box switches: " + n + ". "
+         "If the person asks to turn the light on, start your answer with [LIGHT ON]. To turn it off, start with [LIGHT OFF]. To open or close the garage door, start with [GARAGE]. Otherwise use no brackets.";
+}
+// one reader for Google's answer: handles the chunked pieces
+struct GRead { WiFiClientSecure* c; bool chunked; long left; uint8_t b[1024]; int n, i; unsigned long t;
+  int raw(){ if(i >= n){ n = 0; i = 0; unsigned long t0 = millis(); while(n <= 0 && millis() - t0 < 15000){ if(c->available()) n = c->read(b, sizeof(b)); else if(!c->connected()) return -1; else delay(2); } if(n <= 0) return -1; } return b[i++]; }
+  String line(){ String s; int ch; while((ch = raw()) >= 0 && ch != '\n'){ if(ch != '\r') s += (char)ch; } return s; }
+  int get(){ if(!chunked) return raw(); if(left == 0){ String l = line(); if(!l.length()) l = line(); left = strtol(l.c_str(), NULL, 16); if(left <= 0) return -1; } int ch = raw(); if(ch >= 0) left--; return ch; }
+};
+int gHead(GRead& r){                                              // the status line and headers; gives back the status number
+  String st = r.line(); int code = st.length() > 12 ? st.substring(9, 12).toInt() : 0;
+  r.chunked = false; r.left = 0;
+  for(;;){ String h = r.line(); if(!h.length()) break; h.toLowerCase(); if(h.startsWith("transfer-encoding:") && h.indexOf("chunked") > 0) r.chunked = true; }
+  return code;
+}
+bool gOpen(WiFiClientSecure& c, const String& model, long len){
+  c.setInsecure(); c.setTimeout(20);
+  if(!c.connect("generativelanguage.googleapis.com", 443)) return false;
+  c.print(String("POST /v1beta/models/") + model + ":generateContent?key=" + gKey + " HTTP/1.1\r\nHost: generativelanguage.googleapis.com\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + String(len) + "\r\n\r\n");
+  return true;
+}
+String gErr(const String& body, int code){                       // Google's own words about what went wrong
+  int k = body.indexOf("\"message\""); String m = "";
+  if(k >= 0){ int a = body.indexOf('"', body.indexOf(':', k) + 1); int b2 = body.indexOf('"', a + 1); if(a > 0 && b2 > a) m = body.substring(a + 1, b2); }
+  return "Mary can't answer (" + String(code) + "). " + m.substring(0, 120);
+}
+String jText(const String& body){                                // the first "text" in the answer, made readable
+  int k = body.indexOf("\"text\""); if(k < 0) return "";
+  int a = body.indexOf('"', body.indexOf(':', k) + 1); if(a < 0) return "";
+  String o; for(unsigned int i = a + 1; i < body.length(); i++){ char c = body.charAt(i);
+    if(c == '\\' && i + 1 < body.length()){ char d = body.charAt(++i); if(d == 'n') o += ' '; else if(d == 'u'){ i += 4; o += '\''; } else o += d; }
+    else if(c == '"') break; else o += c; }
+  o.trim(); return o;
+}
+bool aiAnswer(){                                                  // call 1: hear the question (or read it) and answer it
+  bool voice = recN > 0;
+  String pre = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jesc(sysText()) + "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"" +
+               jesc(voice ? String("Listen to what I said in this recording and answer me.") : aiQ) + "\"}";
+  String mid = voice ? String(",{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"") : String("");
+  String post = String(voice ? "\"}}" : "") + "]}],\"generationConfig\":{\"maxOutputTokens\":800,\"temperature\":0.7}}";
+  long wavLen = 44 + (long)recN * 2, b64 = voice ? ((wavLen + 2) / 3) * 4 : 0;
+  WiFiClientSecure c;
+  if(!gOpen(c, gTalk, (long)pre.length() + mid.length() + b64 + post.length())){ aiText = "Mary can't reach the internet right now."; return false; }
+  c.print(pre); c.print(mid);
+  if(voice){                                                      // the recording as a WAV file, sent as base64 bit by bit
+    int16_t* use = recL; long eL = 0, eR = 0; for(int i = 0; i < recN; i += 4){ eL += abs(recL[i]); eR += abs(recR[i]); } if(eR > eL) use = recR;
+    uint8_t h[44] = {'R','I','F','F',0,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,1,0,1,0,0x80,0x3E,0,0,0,0x7D,0,0,2,0,16,0,'d','a','t','a',0,0,0,0};
+    uint32_t dl = recN * 2, rl = dl + 36; memcpy(h + 4, &rl, 4); memcpy(h + 40, &dl, 4);
+    uint8_t in[3]; int k = 0; char out[1025]; int o = 0; long pos = 0;
+    while(pos < wavLen){
+      uint8_t byt; if(pos < 44) byt = h[pos]; else { long s = (pos - 44) >> 1; int v = use[s]; byt = ((pos - 44) & 1) ? (uint8_t)((v >> 8) & 255) : (uint8_t)(v & 255); }
+      in[k++] = byt; pos++;
+      if(k == 3 || pos == wavLen){
+        uint8_t a = in[0], b = k > 1 ? in[1] : 0, cc = k > 2 ? in[2] : 0;
+        out[o++] = B64C[a >> 2]; out[o++] = B64C[((a & 3) << 4) | (b >> 4)]; out[o++] = k > 1 ? B64C[((b & 15) << 2) | (cc >> 6)] : '='; out[o++] = k > 2 ? B64C[cc & 63] : '=';
+        k = 0;
+        if(o >= 1024){ c.write((const uint8_t*)out, o); o = 0; }
+      }
+    }
+    if(o) c.write((const uint8_t*)out, o);
+  }
+  c.print(post);
+  GRead r; r.c = &c; r.n = 0; r.i = 0;
+  int code = gHead(r); String body; int ch; while((ch = r.get()) >= 0 && body.length() < 12000) body += (char)ch;
+  c.stop();
+  if(code != 200){ aiText = gErr(body, code); return false; }
+  String t = jText(body);
+  aiCmd = "";
+  if(t.startsWith("[")){ int e = t.indexOf(']'); if(e > 0){ aiCmd = t.substring(1, e); aiCmd.toUpperCase(); t = t.substring(e + 1); t.trim(); } }
+  if(!t.length()) t = aiCmd.length() ? String("Okay!") : String("Sorry, I didn't catch that. Please try again.");
+  aiText = t; return true;
+}
+void aiVoice(){                                                   // call 2: the answer as a natural voice (24000 a second, made into 16000 for the box)
+  vN = 0;
+  String body = "{\"contents\":[{\"parts\":[{\"text\":\"Say warmly and kindly: " + jesc(aiText) + "\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Aoede\"}}}}}";
+  WiFiClientSecure c;
+  if(!gOpen(c, gVoice, body.length())) return;
+  c.print(body);
+  GRead r; r.c = &c; r.n = 0; r.i = 0;
+  if(gHead(r) != 200){ c.stop(); return; }
+  const char* key = "\"data\""; int m = 0, ch;                  // find "data": "
+  while((ch = r.get()) >= 0){ if(ch == key[m]){ if(!key[++m]) break; } else m = (ch == key[0]) ? 1 : 0; }
+  while((ch = r.get()) >= 0 && ch != '"'){}
+  uint32_t acc = 0; int bits = 0; uint8_t lo = 0; bool haveLo = false; long nIn = 0; int maxN = 16000 * 40;
+  while((ch = r.get()) >= 0 && ch != '"'){
+    const char* q = strchr(B64C, ch); if(!q || ch == 0) continue;
+    acc = (acc << 6) | (uint32_t)(q - B64C); bits += 6;
+    if(bits >= 8){ bits -= 8; uint8_t by = (uint8_t)((acc >> bits) & 255);
+      if(!haveLo){ lo = by; haveLo = true; }
+      else { haveLo = false; int16_t smp = (int16_t)(lo | (by << 8)); if((nIn++ % 3) != 2 && vN < maxN) vBuf[vN++] = smp; }      // keep 2 of every 3: 24000 -> 16000
+    }
+  }
+  c.stop();
+}
+void aiTask(void* arg){
+  for(;;){
+    if(aiState == 1){                                             // listening while the finger is on TALK (8 seconds at most)
+      static int16_t fr[512]; size_t got = 0; unsigned long t0 = millis();
+      i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 20);              // throw away the old sound first
+      while(aiRec && recN < 16000 * 8 && millis() - t0 < 8000){
+        if(i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 100) == ESP_OK){
+          int n = got / 4;
+          for(int i = 0; i < n && recN < 16000 * 8; i++){ int a = fr[2 * i] * 4, b = fr[2 * i + 1] * 4;
+            recL[recN] = (int16_t)(a > 32000 ? 32000 : a < -32000 ? -32000 : a); recR[recN] = (int16_t)(b > 32000 ? 32000 : b < -32000 ? -32000 : b); recN++; }
+        }
+      }
+      aiRec = false;
+      if(recN < 6400){ aiText = "Hold the TALK button the whole time you speak."; vN = 0; aiState = 3; continue; }      // under 0.4 seconds
+      aiState = 2;
+    }
+    if(aiState == 2){
+      if(WiFi.status() != WL_CONNECTED){ aiText = "Mary needs the Wi-Fi to talk."; vN = 0; aiState = 3; continue; }
+      vN = 0;
+      if(aiAnswer()) aiVoice();
+      aiState = 3;
+    }
+    delay(20);
+  }
+}
+
 // ---- the drain pan (Moto Drain Watch board on the same Wi-Fi)
 bool camShow(){                                                   // the drain camera picture, full screen
   if(!lcdOn || !drainIp.length() || WiFi.status() != WL_CONNECTED) return false;
@@ -6991,6 +7159,20 @@ void loop(){
   hubLoop();
   peerLoop();
   drainLoop();
+  if(aiState == 3){                                               // Mary's answer is ready
+    hubAns = aiText; ansPg = 0; hubWait = false;
+    if(aiCmd.length()){
+      for(int i = 0; i < NREL; i++){
+        if(pins[i] < 0) continue;
+        bool light = nameHas(i, "LIGHT") || nameHas(i, "LAMP");
+        if(aiCmd == "LIGHT ON" && light){ doCommand(String(i + 1) + " on"); break; }
+        if(aiCmd == "LIGHT OFF" && light){ doCommand(String(i + 1) + " off"); break; }
+        if(aiCmd == "GARAGE" && isDoor(i)){ doCommand(String(i + 1) + " pulse"); break; }
+      }
+    }
+    if(vN > 0){ vPos = 0; vPlay = true; }
+    aiCmd = ""; aiState = 0; lastTouch = millis(); if(asleep) lcdSleep(false);
+  }
   if(needReport && WiFi.status() == WL_CONNECTED && goodCode(code)){
     needReport = false;
     if(!postState()) Serial.println("  (could not send the answer back)");
