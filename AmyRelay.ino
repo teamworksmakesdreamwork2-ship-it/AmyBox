@@ -1,4 +1,4 @@
-// AMYRELAY_VERSION 6.7   (the build names the files with this number)
+// AMYRELAY_VERSION 6.9   (the build names the files with this number)
 // 6.0: WEB has sound: while a web page is open (YouTube and the like) the Jetson sends the page's sound and the box plays it.
 // 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
 // 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
@@ -163,6 +163,7 @@ uint16_t *maryBig = NULL, *maryFace = NULL;
 volatile bool callMode = false, callSent = false, callIn = false; bool nowOn = false; volatile uint16_t callId = 0, callTot = 0, callGot = 0; volatile unsigned long callAt = 0; uint16_t callMine = 0;
 uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bool callUdpOn = false;
 #define CALL_PAY 240
+volatile bool cmdMode = false; volatile int cmdWhy = 0;                                    // 6.8: the VOICE button: one short spoken order, no talking back, so it is quick
 bool prayOn = false; uint32_t prayHz = 0;                        // 6.7: the PRAYER page, and the signal it puts out (in hertz)
 bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = false; char callTxt[208]; uint16_t callSeen[6]; int callSeenK = 0; unsigned long pcAt = 0; WiFiUDP callUdpTxt;
 volatile bool muPlay = false;
@@ -430,7 +431,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "6.7"
+#define BOX_VER "6.9"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6454,7 +6455,7 @@ bool nameHas(int i, const char* w){ return nm[i].indexOf(w) >= 0; }
 bool isDoor(int i){ return i < NREL && (nameHas(i, "GARAGE") || nameHas(i, "DOOR") || nameHas(i, "GATE")) && !nameHas(i, "LIGHT"); }      // a door gets one short press
 bool tileBuzz(int i){ return i == NREL - 1 && buzzIs4(); }
 // 6.2: ONE long page.  All the buttons in rows of three; a finger drags the rows up and down (no more MORE and BACK).  pgNo is the row at the top.
-static const uint8_t TL[] = {0, 1, 2, 3, 4, 16, 9, 18, 10, 12, 14, 15, 6, 13, 7, 8, 19};
+static const uint8_t TL[] = {20, 0, 1, 2, 3, 4, 16, 9, 10, 18, 12, 14, 15, 6, 13, 7, 8, 19};      // 6.9: VOICE is the very first button
 #define TLN ((int)sizeof(TL))
 #define TLROWS ((TLN + 2) / 3)
 int pgY = 0;                                                      // 6.3: how far the long page is slid up, in dots.  It glides with the finger
@@ -6462,7 +6463,7 @@ int pgY = 0;                                                      // 6.3: how fa
 int tileId(int p){ return (p >= 0 && p < TLN) ? TL[p] : -1; }
 bool btSel(){ return sdCur == sdSongN + NRADIO; }
 bool tileUsed(int id){ return true; }
-bool tileOn(int id){ return id == 18 ? (musicOn && btSel()) : id == 4 ? (bool)musicOn : (id < NREL ? (tileBuzz(id) ? bzAlarm : on[id]) : false); }
+bool tileOn(int id){ return id == 20 ? (cmdMode && aiState != 0) : id == 18 ? (musicOn && btSel()) : id == 4 ? (bool)musicOn : (id < NREL ? (tileBuzz(id) ? bzAlarm : on[id]) : false); }
 bool drainTile(int id){ return id == 2 && pins[2] < 0 && drainIp.length() && millis() - drainSeen < 120000UL; }
 void drawTile(int slot){
   int id = tileId(slot), x = 5 + (slot % 3) * 105, y = 33 + (slot / 3) * 85 - pgY;
@@ -6482,20 +6483,20 @@ void drawTile(int slot){
   bool used = tileUsed(id), isOn = tileOn(id), door = id < NREL && isDoor(id);
   uint16_t tint = !used ? rgb(70, 78, 92) : isOn ? rgb(255, 196, 40) : door ? rgb(40, 120, 240) : id == 4 ? rgb(150, 70, 220) : id == 6 ? rgb(20, 170, 150) : id == 7 ? rgb(50, 50, 130)
                 : id == 8 ? rgb(205, 60, 60) : id == 9 ? rgb(150, 70, 220) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11 || id == 17) ? rgb(60, 100, 170)
-                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : id == 18 ? rgb(40, 110, 235) : id == 19 ? rgb(200, 150, 30) : rgb(14, 34, 84);
+                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : id == 18 ? rgb(40, 110, 235) : id == 19 ? rgb(200, 150, 30) : id == 20 ? rgb(20, 160, 90) : rgb(14, 34, 84);
   cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);              // the dark slab underneath: the button stands up off the picture
   cvGlass(x, y, 100, 77, 14, tint, isOn ? 195 : 165, 0);
   const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_MORE
-                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK : id == 18 ? IC_MUSIC : id == 19 ? IC_STAR
+                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK : id == 18 ? IC_MUSIC : id == 19 ? IC_STAR : id == 20 ? IC_AI
                      : tileBuzz(id) ? IC_BELL : door ? IC_GARAGE : (nameHas(id, "LIGHT") || nameHas(id, "LAMP")) ? IC_LIGHT : IC_PLUG;
   cvSprite(x + 7, y + 6, ic);
   String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String(">>")
             : id == 12 ? String("GO") : id == 13 ? (WiFi.status() == WL_CONNECTED ? String(wifiBars()) + "/4" : String("--")) : id == 14 ? String("HOLD")
-            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<") : id == 18 ? String(isOn ? "ON" : "BT") : id == 19 ? String("333K")
+            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<") : id == 18 ? String(isOn ? "ON" : "BT") : id == 19 ? String("333K") : id == 20 ? String(cmdMode && aiState == 1 ? "SPEAK" : cmdMode && aiState != 0 ? "WAIT" : "TAP")
             : !used ? String("--") : door ? String("TAP") : isOn ? String("ON") : String("OFF");
   cvText(x + 100 - 7 - (int)st.length() * FW, y + 10, st.c_str(), 0xFFFF, 1);
   String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("MORE")
-              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : id == 18 ? String("PHONE BT") : id == 19 ? String("PRAYER") : nm[id];
+              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : id == 18 ? String("PHONE BT") : id == 19 ? String("PRAYER") : id == 20 ? String("VOICE") : nm[id];
   if(name.length() > 8) name = name.substring(0, 8);
   cvText(x + (100 - (int)name.length() * FW) / 2, y + 47, name.c_str(), 0xFFFF, 1);
 }
@@ -6571,7 +6572,7 @@ void paintScene(){                                                 // paints wha
 void lcdDraw(bool force){
   if(!lcdOn) return;
   bool msgOn = msgUntil && (long)(msgUntil - millis()) > 0;
-  String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgY) + String(volSet) + "|" + String(wifiBars()) + wifiWhy() + String(WiFi.status() == WL_CONNECTED ? 0 : (int)((millis() / 3000) & 1));
+  String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgY) + String(cmdMode ? (int)aiState + 1 : 0) + String(volSet) + "|" + String(wifiBars()) + wifiWhy() + String(WiFi.status() == WL_CONNECTED ? 0 : (int)((millis() / 3000) & 1));
   if(camOn) return;                                               // the drain picture is on the screen
   if((webOn || phOn || pcOn) && !kbOn) return;                            // a web page or a photo is on the screen
   if(kbOn) key += "|k" + String(kbFor) + String(kbShift ? 1 : 0) + String(kbSym ? 1 : 0) + kbText;
@@ -6781,6 +6782,11 @@ void tileTap(int slot){                                            // a finger o
     sdWant = sdSongN + NRADIO; musicOn = true; showMsg("BLUETOOTH: MARY BOX"); return; }
   if(id == 12){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; return; }
   if(id == 13){ wfOn = true; wfN = -1; return; }                 // -1: look for Wi-Fi right after the screen says so
+  if(id == 20){                                                    // VOICE: tap, say one order ("light on", "garage", "music off", "web on"), and it is done
+    if(!recL || !micOk){ showMsg("NO MICROPHONE"); return; }
+    if(WiFi.status() != WL_CONNECTED){ showMsg("NEEDS THE JETSON WI-FI"); return; }      // 6.9: no internet and no Google key: the Jetson works out the words
+    if(aiState == 0){ vPlay = false; cmdMode = true; recN = 0; hubAns = ""; ansPg = 0; aiRec = true; aiState = 1; showMsg("SPEAK NOW"); }
+    return; }
   if(id == 19){ prayOn = true; prayStart(); return; }             // the PRAYER page, with its signal
   if(id == 14){ callOn = true; return; }                          // the CALL page: talk, type, camera
   if(id == 15){ if(!sdPicN){ showMsg("NO PHOTOS ON SD CARD"); return; } phOn = true; phAt = 0; return; }
@@ -6876,7 +6882,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 6.7. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 6.9. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7207,7 +7213,7 @@ String sysText(){
   String n = ""; for(int i = 0; i < NREL; i++) if(pins[i] >= 0){ if(n.length()) n += ", "; n += nm[i]; }
   return "You are Mary, a kind, warm, cheerful helper living in a touch-screen box in Mr. Terry's garage in Wichita, Kansas. Terry and his wife are older people. "
          "Answer in one to three short, friendly sentences with plain words. No lists, no symbols, no emojis. The box switches: " + n + ". "
-         "If the person asks to turn the light on, start your answer with [LIGHT ON]. To turn it off, start with [LIGHT OFF]. To open or close the garage door, start with [GARAGE]. Otherwise use no brackets." +
+         "If the person asks to turn the light on, start your answer with [LIGHT ON]. To turn it off, start with [LIGHT OFF]. To open or close the garage door, start with [GARAGE]. To play music, start with [MUSIC ON]; to stop it, [MUSIC OFF]. To open the internet page, start with [WEB ON]; to close it, [WEB OFF]. Otherwise use no brackets." +
          (wxText.length() ? String(" ") + wxText : String(" You cannot see the weather or a clock right now. If asked about them, say so kindly and do not guess."));
 }
 double jNum(const String& b, int from, const char* key){          // the number after a name in Google-style text
@@ -7265,10 +7271,12 @@ String jText(const String& body){                                // the first "t
 }
 bool aiAnswer1(){                                                 // call 1: hear the question (or read it) and answer it
   bool voice = recN > 0;
-  String pre = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jesc(sysText()) + "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"" +
-               jesc(voice ? String("Listen to what I said in this recording and answer me.") : aiQ) + "\"}";
+  String sys = cmdMode ? String("You hear one short spoken order for a garage control box. Reply with exactly one of these and nothing else: [LIGHT ON] [LIGHT OFF] [GARAGE] [MUSIC ON] [MUSIC OFF] [WEB ON] [WEB OFF] [NONE]. "
+                                "Lights on or lamp on means [LIGHT ON]. Garage open, garage close or garage door means [GARAGE]. Internet open or web on means [WEB ON]; internet off or web off means [WEB OFF]. If it is not clear, reply [NONE].") : sysText();
+  String pre = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jesc(sys) + "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"" +
+               jesc(voice ? String(cmdMode ? "Which order is in this recording?" : "Listen to what I said in this recording and answer me.") : aiQ) + "\"}";
   String mid = voice ? String(",{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"") : String("");
-  String post = String(voice ? "\"}}" : "") + "]}],\"generationConfig\":{\"maxOutputTokens\":300,\"temperature\":0.7}}";
+  String post = String(voice ? "\"}}" : "") + (cmdMode ? "]}],\"generationConfig\":{\"maxOutputTokens\":12,\"temperature\":0}}" : "]}],\"generationConfig\":{\"maxOutputTokens\":300,\"temperature\":0.7}}");
   long wavLen = 44 + (long)recN * 2, b64 = voice ? ((wavLen + 2) / 3) * 4 : 0;
   WiFiClientSecure c;
   if(!gOpen(c, gTalk, (long)pre.length() + mid.length() + b64 + post.length())){ aiText = "Mary can't reach the internet right now."; return false; }
@@ -7298,8 +7306,25 @@ bool aiAnswer1(){                                                 // call 1: hea
   String t = jText(body);
   aiCmd = "";
   if(t.startsWith("[")){ int e = t.indexOf(']'); if(e > 0){ aiCmd = t.substring(1, e); aiCmd.toUpperCase(); t = t.substring(e + 1); t.trim(); } }
+  else if(cmdMode){ aiCmd = t; aiCmd.toUpperCase(); aiCmd.replace(".", ""); aiCmd.replace("]", ""); aiCmd.trim(); t = ""; }      // the order came without its brackets
   if(!t.length()) t = aiCmd.length() ? String("Okay!") : String("Sorry, I didn't catch that. Please try again.");
   aiText = t; return true;
+}
+bool cmdLocal(){                                                  // 6.9: VOICE orders with no internet: the sound goes to the Jetson on the same Wi-Fi, one order word comes back
+  int16_t* use = recL; long eL = 0, eR = 0; for(int i = 0; i < recN; i += 4){ eL += abs(recL[i]); eR += abs(recR[i]); } if(eR > eL) use = recR;
+  aiCmd = ""; cmdWhy = 1;                                          // 1 = the Jetson did not answer
+  WiFiClient c; HTTPClient h; h.setConnectTimeout(2500); h.setTimeout(7000); h.setReuse(false);
+  String u = String("http://") + WiFi.gatewayIP().toString() + ":8091/stt";
+  if(!h.begin(c, u)) return false;
+  h.addHeader("Content-Type", "application/octet-stream");
+  int code = h.POST((uint8_t*)use, (size_t)recN * 2);
+  String t = code == 200 ? h.getString() : String("");
+  h.end();
+  if(code == 503){ cmdWhy = 2; return false; }                     // 2 = the Jetson's word listener is not set up (or still loading)
+  if(code != 200) return false;
+  t.trim(); t.toUpperCase(); cmdWhy = 0;
+  if(t != "NONE") aiCmd = t;
+  return true;
 }
 bool aiAnswer(){                                                  // a second try when the line dropped
   for(int t = 0; t < 2; t++){
@@ -7336,22 +7361,34 @@ void aiTask(void* arg){
     if(aiState == 1){                                             // listening while the finger is on TALK (8 seconds at most)
       static int16_t fr[512]; size_t got = 0; unsigned long t0 = millis();
       i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 20);              // throw away the old sound first
-      while(aiRec && recN < 16000 * 8 && millis() - t0 < 8000){
+      long lvS = 0, nf = 1000000; bool spoke = false; unsigned long lastSp = 0;
+      while(aiRec && recN < 16000 * 8 && millis() - t0 < (cmdMode ? 3500UL : 8000UL)){
         if(i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 100) == ESP_OK){
           int n = got / 4;
+          if(cmdMode && n > 0){                                    // VOICE button: nobody holds a button, so stop by itself half a second after the talking stops
+            long e = 0; for(int i = 0; i < n; i++) e += abs(fr[2 * i]) + abs(fr[2 * i + 1]);
+            lvS = (lvS * 3 + e / (2 * n)) / 4;
+            unsigned long el = millis() - t0;
+            if(el > 250){
+              if(lvS < nf) nf = lvS;
+              if(lvS > nf * 3 + 80){ spoke = true; lastSp = millis(); }
+              if(spoke && el > 900 && millis() - lastSp > 550) aiRec = false;
+            }
+          }
           for(int i = 0; i < n && recN < 16000 * 8; i++){ int a = fr[2 * i] * 4, b = fr[2 * i + 1] * 4;
             recL[recN] = (int16_t)(a > 32000 ? 32000 : a < -32000 ? -32000 : a); recR[recN] = (int16_t)(b > 32000 ? 32000 : b < -32000 ? -32000 : b); recN++; }
         }
       }
       aiRec = false;
       if(callMode){ if(recN >= 4800) callSend(); callMode = false; aiState = 0; continue; }      // CALL: off to the other boxes
-      if(recN < 6400){ aiText = "Hold the TALK button the whole time you speak."; vN = 0; aiState = 3; continue; }      // under 0.4 seconds
+      if(recN < 6400){ aiText = "Hold the TALK button the whole time you speak."; aiCmd = ""; cmdWhy = 0; vN = 0; aiState = 3; continue; }      // under 0.4 seconds
       aiState = 2;
     }
     if(aiState == 2){
-      if(WiFi.status() != WL_CONNECTED){ aiText = "Mary needs the Wi-Fi to talk."; vN = 0; aiState = 3; continue; }
+      if(WiFi.status() != WL_CONNECTED){ aiText = "Mary needs the Wi-Fi to talk."; aiCmd = ""; cmdWhy = 1; vN = 0; aiState = 3; continue; }
       vN = 0;
       txtDone = false;
+      if(cmdMode){ cmdLocal(); aiState = 3; delay(20); continue; }      // VOICE button: only the order, worked out on the Jetson, no internet
       wxLoad();
       if(aiAnswer()){ aiState = 4; aiVoice(); }
       aiState = 3;
@@ -7935,16 +7972,28 @@ void sdStart(){
 }
 // ---- Mary's words are ready: on the screen, and the light switches right away
 void aiShow(){
-  hubAns = aiText; ansPg = 0; hubWait = false;
+  bool quick = cmdMode; cmdMode = false;
+  String done = "";
+  if(!quick){ hubAns = aiText; ansPg = 0; }
+  hubWait = false;
   if(aiCmd.length()){
-    for(int i = 0; i < NREL; i++){
+    if(aiCmd == "MUSIC ON"){ if(!musicOn){ musicOn = true; } done = realMusic() ? songName(sdCur) : String("MUSIC ON"); }
+    else if(aiCmd == "MUSIC OFF"){ musicOn = false; done = "MUSIC OFF"; }
+    else if(aiCmd == "WEB ON"){ if(!webOn){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; } done = "WEB ON"; }
+    else if(aiCmd == "WEB OFF"){ if(webOn){ webOn = false; lcdShown = ""; } done = "WEB OFF"; }
+    else for(int i = 0; i < NREL; i++){
       if(pins[i] < 0) continue;
       bool light = nameHas(i, "LIGHT") || nameHas(i, "LAMP");
-      if(aiCmd == "LIGHT ON" && light){ doCommand(String(i + 1) + " on"); break; }
-      if(aiCmd == "LIGHT OFF" && light){ doCommand(String(i + 1) + " off"); break; }
-      if(aiCmd == "GARAGE" && isDoor(i)){ doCommand(String(i + 1) + " pulse"); break; }
+      if(aiCmd == "LIGHT ON" && light){ doCommand(String(i + 1) + " on"); done = "LIGHT ON"; break; }
+      if(aiCmd == "LIGHT OFF" && light){ doCommand(String(i + 1) + " off"); done = "LIGHT OFF"; break; }
+      if(aiCmd.startsWith("GARAGE") && isDoor(i)){ doCommand(String(i + 1) + " pulse"); done = "GARAGE"; break; }
     }
     aiCmd = "";
+  }
+  if(quick){                                                       // VOICE button: a beep and the order at the bottom of the screen
+    if(done.length()){ fxNote(1900, 60); showMsg(done); }
+    else { fxNote(500, 120); showMsg(cmdWhy == 1 ? "JETSON NOT ANSWERING" : cmdWhy == 2 ? "JETSON VOICE NOT READY" : "DID NOT CATCH IT"); }
+    lcdShown = "";
   }
   if(asleep) lcdSleep(false);
 }
