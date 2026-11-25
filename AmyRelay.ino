@@ -2,7 +2,8 @@
 // 5.6: real Christmas music from internet radio (MUSIC / SONG), plus MP3 songs from the SD card. Web pages: drag a finger to
 //      scroll, the keyboard opens by itself on a typing box, only the changed part of the page is sent, a finger always gets through.
 //      Mary knows the real Wichita weather and the time, tries twice before she gives up. Her key is kept on the Jetson and the SD
-//      card, so a new flash does not lose it. Known Wi-Fi (Doctor Magic, Mary's) joins with no password typing. GARAGE on pin 14.
+//      card, so a new flash does not lose it. The DRAIN button works from Doctor Magic too (the Jetson passes the drain board on).
+// Known Wi-Fi (Doctor Magic, Mary's) joins with no password typing. GARAGE on pin 14.
 // 5.5: the setup page saves the Google key even when no Wi-Fi is picked (keeps the Wi-Fi the box is on),
 //      sharp web pages (the Jetson sends plain pixels, no blurry picture file), UP / DOWN scroll, the Wi-Fi page finds
 //      Wi-Fi even while the box is trying a wrong password, Mary's page says plainly when her key is missing.
@@ -7608,6 +7609,29 @@ void keySync(){                                                   // Mary's key 
     if(h.begin(c, base + "?set=" + urlEnc(gKey))){ if(h.GET() == 200) sent = true; h.end(); }
   }
 }
+void drainRelay(){                                                // the drain board is on Mary's Wi-Fi, this box on Doctor Magic: the Jetson hears the drain board and passes it on
+  static unsigned long at = 0; static int bad = 0;
+  if(WiFi.status() != WL_CONNECTED || webOn || kbOn || camOn || aiState != 0) return;
+  if(drainIp.length() && millis() - drainSeen < 30000UL) return;  // heard it not long ago
+  if(at && millis() - at < (bad >= 3 ? 300000UL : 15000UL)) return;
+  at = millis(); if(!at) at = 1;
+  WiFiClient c; HTTPClient h; h.setConnectTimeout(800); h.setTimeout(2500);
+  bool ok = false;
+  if(h.begin(c, String("http://") + WiFi.gatewayIP().toString() + ":8091/drain")){
+    int code = h.GET();
+    if(code == 200){
+      String t = h.getString(); t.trim(); int a = t.indexOf('|'), b = t.lastIndexOf('|');
+      if(a > 6 && b > a && t.substring(b + 1).toInt() < 120){
+        drainIp = t.substring(0, a); int w = t.substring(a + 1, b) == "WET" ? 1 : 0;
+        if(w && drainWet != 1) drainAlarmAt = 0;
+        drainWet = w; drainSeen = millis();
+      }
+      ok = true;
+    } else if(code == 204) ok = true;
+    h.end();
+  }
+  bad = ok ? 0 : bad + 1;
+}
 void fix565(uint8_t* px, long n){                                 // the chip's picture opener can hand back the colors in another order: test it once with a red square, then put every picture right
   if(jpgMode < 0){
     jpgMode = 0;
@@ -7777,6 +7801,7 @@ void loop(){
   webLoop();
   phLoop();
   keySync();
+  drainRelay();
   if(wfOn && wfN < 0 && !kbOn){                                   // the Wi-Fi page: look for Wi-Fi
     if(apUp) WiFi.mode(WIFI_AP_STA);
     else if(WiFi.status() != WL_CONNECTED){ WiFi.disconnect(); delay(200); wifiLostAt = millis(); }      // a try that keeps failing blocks the listening: stop it first
