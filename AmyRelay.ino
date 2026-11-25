@@ -1,4 +1,4 @@
-// AMYRELAY_VERSION 6.2   (the build names the files with this number)
+// AMYRELAY_VERSION 6.3   (the build names the files with this number)
 // 6.0: WEB has sound: while a web page is open (YouTube and the like) the Jetson sends the page's sound and the box plays it.
 // 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
 // 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
@@ -6273,6 +6273,7 @@ uint16_t mix(uint16_t a, uint16_t b, int k){                     // k = 0: all a
 }
 void cvBox(int x, int y, int w, int h, uint16_t c){ for(int yy = (y < cvY0 ? cvY0 : y); yy < y + h && yy < cvY0 + cvHh; yy++) for(int xx = (x < 0 ? 0 : x); xx < x + w && xx < LCD_W; xx++) CV[(yy - cvY0) * LCD_W + xx] = c; }
 void cvBand(int y0, int h){ cvY0 = y0; cvHh = h; for(int y = 0; y < h; y++) for(int x = 0; x < LCD_W; x++) CV[y * LCD_W + x] = pgm_read_word(&BG[(y0 + y) * LCD_W + x]); }
+void cvBg(int y, int h){ for(int yy = (y < cvY0 ? cvY0 : y); yy < y + h && yy < cvY0 + cvHh; yy++) for(int x = 0; x < LCD_W; x++) CV[(yy - cvY0) * LCD_W + x] = pgm_read_word(&BG[yy * LCD_W + x]); }      // the plain picture again over some rows
 void cvFlush(){
   if(!lcdOn) return;
   uint8_t buf[128]; long total = (long)LCD_W * cvHh, done = 0;
@@ -6454,14 +6455,16 @@ bool tileBuzz(int i){ return i == NREL - 1 && buzzIs4(); }
 static const uint8_t TL[] = {0, 1, 2, 3, 4, 16, 9, 18, 10, 12, 14, 15, 6, 13, 7, 8};
 #define TLN ((int)sizeof(TL))
 #define TLROWS ((TLN + 2) / 3)
-int tileId(int slot){ int p = pgNo * 3 + slot; return (p >= 0 && p < TLN) ? TL[p] : -1; }
+int pgY = 0;                                                      // 6.3: how far the long page is slid up, in dots.  It glides with the finger
+#define PGMAX ((TLROWS - 2) * 85)
+int tileId(int p){ return (p >= 0 && p < TLN) ? TL[p] : -1; }
 bool btSel(){ return sdCur == sdSongN + NRADIO; }
 bool tileUsed(int id){ return true; }
 bool tileOn(int id){ return id == 18 ? (musicOn && btSel()) : id == 4 ? (bool)musicOn : (id < NREL ? (tileBuzz(id) ? bzAlarm : on[id]) : false); }
 bool drainTile(int id){ return id == 2 && pins[2] < 0 && drainIp.length() && millis() - drainSeen < 120000UL; }
 void drawTile(int slot){
-  int id = tileId(slot), x = 5 + (slot % 3) * 105, y = 33 + (slot / 3) * 85;
-  if(id < 0) return;
+  int id = tileId(slot), x = 5 + (slot % 3) * 105, y = 33 + (slot / 3) * 85 - pgY;
+  if(id < 0 || y + 84 <= 31 || y >= 204) return;
   if(drainTile(id)){
     if(y + 84 <= cvY0 || y >= cvY0 + cvHh) return;
     bool wet = drainWet == 1;
@@ -6518,14 +6521,16 @@ void paintScene(){                                                 // paints wha
     paintJet();
     foot = hubWait ? String("MARY IS THINKING...") : hubPhone.length() ? (hubPhone.length() <= 15 ? String("PHONE ") + hubPhone : hubPhone) : hubInfo.length() ? hubInfo : String("TAP EXIT TO GO BACK");
   } else {
+    for(int i = 0; i < TLN; i++) drawTile(i);
+    cvBox(317, 34, 3, 168, rgb(40, 50, 80));                       // the slim bar on the right shows where you are on the long page
+    { int th = 168 * 2 / TLROWS, ty = 34 + (168 - th) * pgY / (PGMAX > 0 ? PGMAX : 1); cvBox(317, ty, 3, th, rgb(235, 240, 255)); }
+    cvBg(0, 31); cvBg(204, 36);                                    // buttons sliding past the top and the bottom go out of sight there
+    cvGlass(0, 0, LCD_W, 30, 0, rgb(6, 14, 40), 150, 0);
     cvText(8, 3, "MARY'S MAGIC BOX", 0xFFFF, 1);
     int nx = LCD_W - 6 - (int)net.length() * FW, wb = wifiBars();
     cvText(nx, 3, net.c_str(), net == "READY" ? rgb(140, 255, 170) : rgb(255, 214, 90), 1);
     for(int i = 0; i < 4; i++)                                     // the Wi-Fi bars
       cvBox(nx - 36 + i * 8, 26 - (i + 1) * 5 - 1, 6, (i + 1) * 5 + 1, i < wb ? (wb >= 3 ? rgb(120, 255, 150) : wb == 2 ? rgb(255, 214, 90) : rgb(255, 90, 90)) : rgb(70, 80, 100));
-    for(int i = 0; i < 6; i++) drawTile(i);
-    cvBox(317, 34, 3, 168, rgb(40, 50, 80));                       // the slim bar on the right shows where you are on the long page
-    { int th = 168 * 2 / TLROWS, ty = 34 + (168 - th) * pgNo / (TLROWS > 2 ? TLROWS - 2 : 1); cvBox(317, ty, 3, th, rgb(235, 240, 255)); }
     foot = (!apUp && gKey.length() && WiFi.status() == WL_CONNECTED) ? String("TAP ME TO TALK") : apUp ? (((millis() / 3000) & 1) && ssid.length() ? wifiWhy() : String("SETUP: ") + AP_NAME) : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : wifiWhy());
   }
   if(msgUntil && (long)(msgUntil - millis()) > 0) foot = msgText;
@@ -6539,7 +6544,7 @@ void paintScene(){                                                 // paints wha
 void lcdDraw(bool force){
   if(!lcdOn) return;
   bool msgOn = msgUntil && (long)(msgUntil - millis()) > 0;
-  String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgNo) + String(volSet) + "|" + String(wifiBars()) + wifiWhy() + String(WiFi.status() == WL_CONNECTED ? 0 : (int)((millis() / 3000) & 1));
+  String key = stateText() + "|" + String(apUp ? 1 : 0) + String((int)WiFi.status()) + String(subOk && httpCode == 200 ? 1 : 0) + "|" + (msgOn ? msgText : String("")) + "|" + String(musicOn ? 1 : 0) + String(pgY) + String(volSet) + "|" + String(wifiBars()) + wifiWhy() + String(WiFi.status() == WL_CONNECTED ? 0 : (int)((millis() / 3000) & 1));
   if(camOn) return;                                               // the drain picture is on the screen
   if((webOn || phOn || pcOn) && !kbOn) return;                            // a web page or a photo is on the screen
   if(kbOn) key += "|k" + String(kbFor) + String(kbShift ? 1 : 0) + String(kbSym ? 1 : 0) + kbText;
@@ -6842,26 +6847,29 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 6.2. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 6.3. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
-bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hYs = 0, hUp = 0;
-void homeTp(bool down, int x, int y, unsigned long now){          // the long page of buttons: a short touch presses a button, a slide moves the rows
+bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
+void homeTp(bool down, int x, int y, unsigned long now){          // the long page of buttons: a short touch presses a button, a slide moves the whole page with the finger
   if(down){
     hUp = 0;
-    if(!hDn){ hDn = true; hDrag = false; hX0 = x; hY0 = hYs = y; lastTouch = now; return; }
-    int dy = y - hYs;
-    if(dy >= 36 || dy <= -36){
-      hDrag = true; hYs = y; lastTouch = now;
-      int np = pgNo + (dy < 0 ? 1 : -1); if(np > TLROWS - 2) np = TLROWS - 2; if(np < 0) np = 0;
-      if(np != pgNo){ pgNo = np; lcdDraw(false); }
+    if(!hDn){ hDn = true; hDrag = false; hX0 = x; hY0 = y; hP0 = pgY; lastTouch = now; return; }
+    int dy = y - hY0;
+    if(!hDrag && (dy >= 10 || dy <= -10)) hDrag = true;
+    if(hDrag){
+      int np = hP0 - dy; if(np > PGMAX) np = PGMAX; if(np < 0) np = 0;
+      if(np - pgY >= 2 || pgY - np >= 2){ pgY = np; lastTouch = now; lcdDraw(false); }
     }
     return;
   }
   if(!hDn) return;
   if(++hUp < 2) return;                                           // the finger must be off for two looks: a skipped reading is not a lift
   hDn = false; hUp = 0;
-  if(!hDrag && now - tpAt > 200){ tpAt = now; tpTaps++; lastTouch = now; tileTap((hX0 < 108 ? 0 : (hX0 < 213 ? 1 : 2)) + (hY0 < 117 ? 0 : 3)); lcdDraw(false); }
+  if(!hDrag && now - tpAt > 200){
+    int yy = hY0 - 33 + pgY, row = yy / 85, col = hX0 < 108 ? 0 : (hX0 < 213 ? 1 : 2);
+    if(yy >= 0 && tileId(row * 3 + col) >= 0){ tpAt = now; tpTaps++; lastTouch = now; tileTap(row * 3 + col); lcdDraw(false); }
+  }
 }
 void tpLoop(){
   if(!tpOk || !lcdOn) return;
