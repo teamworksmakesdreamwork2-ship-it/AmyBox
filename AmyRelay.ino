@@ -1,4 +1,7 @@
-// AMYRELAY_VERSION 5.4   (the build names the files with this number)
+// AMYRELAY_VERSION 5.5   (the build names the files with this number)
+// 5.5: the setup page saves the Google key even when no Wi-Fi is picked (keeps the Wi-Fi the box is on),
+//      sharp web pages (the Jetson sends plain pixels, no blurry picture file), UP / DOWN scroll, the Wi-Fi page finds
+//      Wi-Fi even while the box is trying a wrong password, Mary's page says plainly when her key is missing.
 // 5.4 MARY'S MAGIC BOX: page 3 buttons WEB (real web pages through the Jetson), WI-FI (pick Wi-Fi on the screen),
 //     TYPE (a keyboard on the screen to ask Mary), PHOTOS (pictures from the SD card), MARY. Real MP3 songs from the
 //     SD card (MUSIC / SONG buttons). Put a picture called mary.jpg on the SD card and Mary has that face.
@@ -6368,11 +6371,24 @@ void jetTap(int i){
     return;
   }
   if(i == 4){ jetOn = false; return; }
+  if(!hubOk) return;                                              // no key and no Jetson: only EXIT works
   if(i == 3){ String L[24]; int n = ansLines(L, 24); ansPg = (ansPg + 1) * 4 < n ? ansPg + 1 : 0; return; }
   if(i >= 0 && i < 3){ hubAns = ""; ansPg = 0; hubAsk(JQ[i]); }
 }
 void paintJet(){
   bool mary = gKey.length() > 0;
+  if(!mary && !hubOk){                                            // no Google key yet: say so plainly (not "no Jetson")
+    cvText(8, 3, "MARY", rgb(255, 220, 90), 1);
+    cvText(LCD_W - 6 - 8 * FW, 3, "NEED KEY", rgb(255, 150, 150), 1);
+    cvGlass(4, 33, LCD_W - 8, 106, 12, rgb(14, 34, 84), 170, 0);
+    String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("192.168.4.1");
+    cvText(14, 38, "Mary needs her Google", rgb(255, 230, 120), 1);
+    cvText(14, 63, "key. On a phone open", rgb(200, 210, 230), 1);
+    cvText(14, 88, ip.c_str(), 0xFFFF, 1);
+    cvText(14, 113, "and paste it in 7.", rgb(200, 210, 230), 1);
+    cvGlass(254, 151, 59, 47, 10, 0x0000, 140, 1); cvGlass(252, 146, 59, 47, 10, rgb(225, 50, 60), 190, 0); cvText(252 + (59 - 4 * FW) / 2, 158, "EXIT", 0xFFFF, 1);
+    return;
+  }
   cvText(8, 3, mary ? "MARY" : "MARY AI", rgb(255, 220, 90), 1);
   String st = mary ? (aiState == 1 ? String("LISTENING") : aiState == 2 ? String("THINKING") : aiState == 4 ? String("VOICE...") : vPlay ? String("TALKING") : String("READY"))
                    : (!hubHost.length() ? String("NO JETSON SET") : hubOk ? String("JETSON OK") : String("NO JETSON"));
@@ -6787,7 +6803,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 5.4. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 5.5. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 void tpLoop(){
@@ -6901,6 +6917,7 @@ String page(const String& note){
   h += "<br>Mary's message service: ";
   h += (subOk && httpCode == 200) ? "<span class=ok>connected</span>" : "<span class=no>not connected yet</span>";
   h += "</div><form method=post action=/save><div class=card><b>1. Your Wi-Fi</b> <small>(2.4 GHz)</small><select name=ssid><option value=''>pick it here...</option>";
+  if(ssid.length() && wifiList.indexOf("\"" + esc(ssid) + "\"") < 0) h += "<option value=\"" + esc(ssid) + "\" selected>" + esc(ssid) + " (now)</option>";      // the Wi-Fi it uses now is always in the list
   h += wifiList;
   h += "</select><input name=ssid2 placeholder='...or type the Wi-Fi name' autocapitalize=off autocomplete=off><input name=pass placeholder='Wi-Fi password' value=\"" + esc(pass) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<div class=card><b>2. Secret code (you can SKIP this)</b><br><small>Only needed to switch from far away. Leave it empty if you do not have it.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
@@ -6954,13 +6971,14 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>Mary&#39;s Magic Box 5.4 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>Mary&#39;s Magic Box 5.5 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
 void handleSave(){
   String s = web.arg("ssid2"); s.trim(); if(!s.length()) s = web.arg("ssid");
   String c = web.arg("code"); c.trim();
+  if(!s.length()) s = ssid;                                       // nothing picked: keep the Wi-Fi the box already uses (the key and the rest still save)
   if(!s.length()){ web.send(200, "text/html", page("Pick your Wi-Fi first.")); return; }
   if(!c.length()) c = code;                                       // no code typed: keep the old one (or none - the box still works at home)
   if(c.length() && !goodCode(c)){ web.send(200, "text/html", page("That secret code is not right. Leave it empty if you do not have it.")); return; }
@@ -7016,7 +7034,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("Mary's Magic Box 5.4 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("Mary's Magic Box 5.5 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", "");
@@ -7433,6 +7451,13 @@ void webBar(){
   }
 }
 bool webDraw(int len){
+  if(len == LCD_W * (LCD_H - 24) * 2){                            // plain pixels, ready for the screen: sharp, nothing to unpack
+    lcdOpen(); lcdWindow(0, 24, LCD_W, LCD_H - 24);
+    static uint8_t ln[LCD_W * 2];
+    for(int y = 0; y < LCD_H - 24; y++){ memcpy(ln, webJpg + (size_t)y * LCD_W * 2, LCD_W * 2); lcdSpi.writeBytes(ln, LCD_W * 2); }
+    lcdClose();
+    return true;
+  }
   int w = 0, h = 0;
   if(!jpgSize(webJpg, len, w, h) || w > LCD_W || h > LCD_H - 24 || w < 8 || h < 8) return false;
   if(!jpg2rgb565(webJpg, len, webPx, JPG_SCALE_NONE)) return false;
@@ -7626,7 +7651,14 @@ void loop(){
   drainLoop();
   webLoop();
   phLoop();
-  if(wfOn && wfN < 0 && !kbOn){ if(apUp) WiFi.mode(WIFI_AP_STA); scanWifi(); lcdDraw(true); }      // the Wi-Fi page: look for Wi-Fi
+  if(wfOn && wfN < 0 && !kbOn){                                   // the Wi-Fi page: look for Wi-Fi
+    if(apUp) WiFi.mode(WIFI_AP_STA);
+    else if(WiFi.status() != WL_CONNECTED){ WiFi.disconnect(); delay(200); wifiLostAt = millis(); }      // a try that keeps failing blocks the listening: stop it first
+    scanWifi();
+    if(wfN <= 0){ delay(600); scanWifi(); }                        // busy the first time: once more
+    if(wfN < 0) wfN = 0;
+    lcdDraw(true);
+  }
   if(aiState == 4 && !txtDone){ txtDone = true; aiShow(); }       // Mary's words are ready: show them and switch the light NOW, her voice comes a moment later
   if(aiState == 3){                                               // Mary's answer is ready
     if(!txtDone) aiShow();
