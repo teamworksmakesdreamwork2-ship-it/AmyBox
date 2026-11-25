@@ -1,0 +1,91 @@
+name: Build AmyRelay
+on:
+  push: { branches: [ main, master ] }
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Move sketch
+        run: |
+          mkdir -p AmyRelay
+          if [ -f AmyRelay.ino ]; then mv -f AmyRelay.ino AmyRelay/AmyRelay.ino; fi
+          V=$(grep -o -m1 'AMYRELAY_VERSION [0-9][0-9.]*' AmyRelay/AmyRelay.ino | head -1 | cut -d' ' -f2)
+          echo "V=${V:-new}" >> $GITHUB_ENV
+          echo "Building version ${V}"
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
+          pip install --quiet esptool==4.8.1
+      - name: Moto Drain Watch (ESP32-S3 N16R8 + camera)
+        if: hashFiles('MotoDrain.ino') != ''
+        continue-on-error: true
+        run: |
+          mkdir -p MotoDrain && cp MotoDrain.ino MotoDrain/MotoDrain.ino
+          D=$(grep -o -m1 'MOTODRAIN_VERSION [0-9][0-9.]*' MotoDrain/MotoDrain.ino | cut -d' ' -f2)
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB --output-dir outd MotoDrain
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32s3 merge_bin -o MotoDrain-${D:-new}.bin --flash_mode dio --flash_freq 80m --flash_size 16MB \
+            0x0 outd/MotoDrain.ino.bootloader.bin 0x8000 outd/MotoDrain.ino.partitions.bin 0xe000 "$BOOT" 0x10000 outd/MotoDrain.ino.bin
+      - name: Moto Command touch panel (Waveshare ESP32-S3-Touch-LCD-1.9)
+        if: hashFiles('MotoCommand.ino') != ''
+        continue-on-error: true
+        run: |
+          mkdir -p MotoCommand && cp MotoCommand.ino MotoCommand/MotoCommand.ino
+          C=$(grep -o -m1 'MOTOCOMMAND_VERSION [0-9][0-9.]*' MotoCommand/MotoCommand.ino | cut -d' ' -f2)
+          arduino-cli lib install "Adafruit GFX Library" "Adafruit ST7735 and ST7789 Library" "Adafruit BusIO"
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB --output-dir outm MotoCommand
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32s3 merge_bin -o MotoCommand-${C:-new}.bin --flash_mode dio --flash_freq 80m --flash_size 16MB \
+            0x0 outm/MotoCommand.ino.bootloader.bin 0x8000 outm/MotoCommand.ino.partitions.bin 0xe000 "$BOOT" 0x10000 outm/MotoCommand.ino.bin
+      - name: TC Bunny camera (ESP32-CAM)
+        if: hashFiles('BunnyCam.ino') != ''
+        continue-on-error: true
+        run: |
+          mkdir -p BunnyCam && cp BunnyCam.ino BunnyCam/BunnyCam.ino
+          B=$(grep -o -m1 'TCBUNNY_VERSION [0-9][0-9.]*' BunnyCam/BunnyCam.ino | cut -d' ' -f2)
+          arduino-cli compile --fqbn esp32:esp32:esp32cam --output-dir outc BunnyCam
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32 merge_bin -o BunnyCam-${B:-new}.bin --flash_mode dio --flash_freq 40m --flash_size 4MB \
+            0x1000 outc/BunnyCam.ino.bootloader.bin 0x8000 outc/BunnyCam.ino.partitions.bin 0xe000 "$BOOT" 0x10000 outc/BunnyCam.ino.bin
+      - name: TC Bunny Arduino UNO
+        if: hashFiles('BunnyUno.ino') != ''
+        continue-on-error: true
+        run: |
+          mkdir -p BunnyUno && cp BunnyUno.ino BunnyUno/BunnyUno.ino
+          arduino-cli core install arduino:avr
+          arduino-cli lib install Servo
+          arduino-cli compile --fqbn arduino:avr:uno --output-dir outu BunnyUno
+          cp outu/BunnyUno.ino.hex BunnyUno-1.0.hex
+      - name: Black touch box (ESP32-S3)
+        continue-on-error: true
+        run: |
+          arduino-cli lib install "ESP8266Audio@1.9.9" || arduino-cli lib install "ESP8266Audio@1.9.7"
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,PartitionScheme=huge_app --output-dir out AmyRelay
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32s3 merge_bin -o Black-$V.bin --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x0 out/AmyRelay.ino.bootloader.bin 0x8000 out/AmyRelay.ino.partitions.bin 0xe000 "$BOOT" 0x10000 out/AmyRelay.ino.bin
+      - name: Yellow touch board (ESP32-2432S028)
+        continue-on-error: true
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --output-dir outy AmyRelay
+          BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32 merge_bin -o Yellow-$V.bin --flash_mode dio --flash_freq 40m --flash_size 4MB \
+            0x1000 outy/AmyRelay.ino.bootloader.bin 0x8000 outy/AmyRelay.ino.partitions.bin 0xe000 "$BOOT" 0x10000 outy/AmyRelay.ino.bin
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: AmyRelay firmware (flash this)
+          files: |
+            Black-*.bin
+            Yellow-*.bin
+            MotoDrain-*.bin
+            MotoCommand-*.bin
+            BunnyCam-*.bin
+            BunnyUno-*.hex
