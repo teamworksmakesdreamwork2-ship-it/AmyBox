@@ -1,4 +1,4 @@
-// AMYRELAY_VERSION 6.4   (the build names the files with this number)
+// AMYRELAY_VERSION 6.5   (the build names the files with this number)
 // 6.0: WEB has sound: while a web page is open (YouTube and the like) the Jetson sends the page's sound and the box plays it.
 // 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
 // 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
@@ -228,7 +228,7 @@ String esc(const String& s){                                    // safe to put i
   return o;
 }
 bool goodPin(int p){ return p == -1 || (p >= 1 && p <= 48 && p != 3 && p != 19 && p != 20 && !(p >= 35 && p <= 37) && p != 45 && p != 46); }
-bool goodPinFor(int p, int b){ if(b == 4) return p == -1 || p == 4 || p == 5 || p == 13 || p == 14 || (p >= 16 && p <= 19) || p == 23 || (p >= 25 && p <= 27) || p == 32 || p == 33; if(b == 3) return p == -1 || p == 22 || p == 27; if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21; return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
+bool goodPinFor(int p, int b){ if(b == 4) return p == -1 || p == 4 || p == 5 || p == 13 || p == 14 || (p >= 16 && p <= 19) || p == 23 || (p >= 25 && p <= 27) || p == 32 || p == 33; if(b == 3) return p == -1 || p == 22 || p == 27; if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21 || p == 44;      /* 6.5: 44 is the RXD wire of the UART plug */ return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
 
 // ------------------------------------------------------------ the relays
 void setRelay(int i, bool v){
@@ -429,7 +429,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "6.4"
+#define BOX_VER "6.5"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6849,7 +6849,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 6.4. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 6.5. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -6995,7 +6995,7 @@ String page(const String& note){
   h += "<div class=card><b>2. Secret code (you can SKIP this)</b><br><small>Only needed to switch from far away. Leave it empty if you do not have it.</small><input name=code value=\"" + esc(code) + "\" autocapitalize=off autocomplete=off></div>";
   h += "<div class=card><b>3. Relay pins</b> <small>(-1 = not used)</small><br>";
   for(int i = 0; i < NREL; i++) h += "<input class=pin type=number name=p" + String(i + 1) + " value=" + String(pins[i]) + ">";
-  h += String("<small>") + (board == 4 ? "On the small board use 26, 27, 25, 32, 33, 18, 19 or 23 (21 and 22 run the tiny screen). A short press on its BOOT button flips switch 1." : board == 3 ? "On the yellow board use only 22 or 27 (the small plug marked CN1)." : board == 2 ? "On the 2.8 inch touch board use only 2, 14 or 21 (the small plug marked IO2 IO3 IO14 IO21)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
+  h += String("<small>") + (board == 4 ? "On the small board use 26, 27, 25, 32, 33, 18, 19 or 23 (21 and 22 run the tiny screen). A short press on its BOOT button flips switch 1." : board == 3 ? "On the yellow board use only 22 or 27 (the small plug marked CN1)." : board == 2 ? "On the 2.8 inch touch board use only 2, 14, 21 (the small plug marked IO2 IO3 IO14 IO21) or 44 (the RXD wire of the UART plug)." : board == 1 ? "On the red MaTouch use only 5 6 7 (4 is the buzzer)." : "Good pins on the ESP32-S3: 5 6 7 15 16 17 18 (4 is the buzzer). Not 0, 3, 19, 20, 35-37, 45, 46.") + "</small><select name=al><option value=1";
   h += activeLow ? " selected" : "";
   h += ">Relay board clicks ON when the pin goes LOW (most blue relay boards)</option><option value=0";
   h += activeLow ? "" : " selected";
@@ -7105,7 +7105,11 @@ void handleOther(){                                             // any other add
 }
 
 void setup(){
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  Serial.begin(115200, SERIAL_8N1, -1, 43);                       // 6.5: the box only sends text (TXD 43).  RXD (44) is left free: the LIGHT relay sits on it
+#else
   Serial.begin(115200);
+#endif
   delay(300);
   Serial.println(); Serial.println("Mary's Magic Box 6.0 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
@@ -7139,7 +7143,7 @@ void setup(){
     tpInit();
     if(tpOk){
       board = 2; prefs.putInt("bd", 2);
-      if(!prefs.isKey("p1")){ pins[0] = 2; pins[1] = 14; for(int i = 2; i < NREL; i++) pins[i] = -1; prefs.putInt("p1", 2); prefs.putInt("p2", 14); }      // LIGHT on 2, GARAGE on 14
+      if(!prefs.isKey("p1")){ pins[0] = 44; pins[1] = 14; for(int i = 2; i < NREL; i++) pins[i] = -1; prefs.putInt("p1", 44); prefs.putInt("p2", 14); }      // 6.5: LIGHT on the UART plug RXD wire (44), GARAGE on 14      // LIGHT on 2, GARAGE on 14
       if(!prefs.isKey("bz")) prefs.putInt("bz", -1);
       Serial.println("Found the 2.8 inch touch screen board.");
     } else Wire.end();
