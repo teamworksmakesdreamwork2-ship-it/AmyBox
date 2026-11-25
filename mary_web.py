@@ -131,6 +131,48 @@ def bt_agent():
             log("bluetooth:", e)
         time.sleep(10)
 
+# ---- 6.9: VOICE orders with no internet.  The box sends what it heard, the Jetson works out the words by itself (Vosk) and sends back the order
+STT = {"model": None, "state": "off"}
+STT_WORDS = ["lights on", "light on", "turn on the lights", "turn on the light", "turn the lights on", "turn the light on",
+             "lights off", "light off", "turn off the lights", "turn off the light", "turn the lights off", "turn the light off",
+             "open garage", "close garage", "garage open", "garage close", "open the garage", "close the garage", "garage door",
+             "music on", "turn on the music", "play music", "play the music",
+             "music off", "turn off the music", "stop music", "stop the music",
+             "internet on", "internet open", "open internet", "open the internet", "web on",
+             "internet off", "internet close", "close internet", "close the internet", "web off", "[unk]"]
+def stt_load():
+    """Gets the word listener ready (the first time it fetches its small English word file, about 40 MB, once)."""
+    try:
+        from vosk import Model, SetLogLevel
+        SetLogLevel(-1)
+        STT["state"] = "loading"
+        STT["model"] = Model(lang="en-us")
+        STT["state"] = "ready"; log("voice orders: ready (no internet needed from now on)")
+    except ImportError:
+        STT["state"] = "missing"; log("voice orders are off: run   pip3 install vosk   once")
+    except Exception as e:
+        STT["state"] = "error"; log("voice orders:", e)
+
+def stt_order(pcm):
+    """16 kHz, 16-bit sound from the box -> one order word for the box (or NONE)."""
+    from vosk import KaldiRecognizer
+    rec = KaldiRecognizer(STT["model"], 16000, json.dumps(STT_WORDS))
+    rec.SetWords(True)
+    for i in range(0, len(pcm), 8000): rec.AcceptWaveform(pcm[i:i + 8000])
+    res = json.loads(rec.FinalResult())
+    text = " " + res.get("text", "") + " "
+    ws = [w for w in res.get("result", []) if w.get("word") != "[unk]"]
+    conf = sum(w.get("conf", 0) for w in ws) / len(ws) if ws else 0.0
+    off = (" off " in text) or (" stop " in text) or (" close " in text)
+    order = "NONE"
+    if " garage " in text: order = "GARAGE"
+    elif " music " in text: order = "MUSIC OFF" if off else "MUSIC ON"
+    elif " internet " in text or " web " in text: order = "WEB OFF" if off else "WEB ON"
+    elif " light " in text or " lights " in text: order = "LIGHT OFF" if off else "LIGHT ON"
+    if order != "NONE" and conf < (0.80 if order == "GARAGE" else 0.50): order = "NONE"      # not sure enough: do nothing (the garage door needs to be very sure)
+    log("voice order:", text.strip() or "-", "%.2f" % conf, "->", order)
+    return order
+
 class WS:
     """A very small websocket client, just enough to talk to Chromium."""
     def __init__(self, url):
@@ -327,6 +369,22 @@ class Handler(BaseHTTPRequestHandler):
         data = text.encode()
         self.send_response(code); self.send_header("Content-Length", str(len(data))); self.send_header("Connection", "close"); self.end_headers()
         if data: self.wfile.write(data)
+
+    def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path.strip("/")
+        if path != "stt": return self.plain(404)
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n <= 0 or n > 400000: return self.plain(400)
+            pcm = b""
+            while len(pcm) < n:
+                d = self.rfile.read(n - len(pcm))
+                if not d: break
+                pcm += d
+            if STT["state"] != "ready": return self.plain(503, STT["state"])
+            return self.plain(200, stt_order(pcm))
+        except Exception as e:
+            log("stt:", e); return self.plain(500)
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
@@ -660,6 +718,7 @@ if __name__ == "__main__":
     threading.Thread(target=drain_listen, daemon=True).start()
     threading.Thread(target=hub_listen, daemon=True).start()
     threading.Thread(target=bt_agent, daemon=True).start()
+    threading.Thread(target=stt_load, daemon=True).start()
     threading.Thread(target=phone_server, daemon=True).start()
     threading.Thread(target=lambda: B.do("shot", {}), daemon=True).start()      # open the browser now, not on the first tap
     srv.serve_forever()
