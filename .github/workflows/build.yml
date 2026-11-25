@@ -66,6 +66,9 @@ jobs:
       - name: Black touch box (ESP32-S3)
         continue-on-error: true
         run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "ESP8266Audio@1.9.7" || git clone --depth 1 --branch 1.9.7 https://github.com/earlephilhower/ESP8266Audio ~/Arduino/libraries/ESP8266Audio || true
+          arduino-cli lib list
           arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,PartitionScheme=huge_app --output-dir out AmyRelay
           BOOT=$(find ~/.arduino15/packages/esp32/hardware/esp32 -name boot_app0.bin | head -1)
           python -m esptool --chip esp32s3 merge_bin -o Black-$V.bin --flash_mode dio --flash_freq 80m --flash_size 4MB \
