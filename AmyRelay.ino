@@ -1,4 +1,4 @@
-// AMYRELAY_VERSION 6.6   (the build names the files with this number)
+// AMYRELAY_VERSION 6.7   (the build names the files with this number)
 // 6.0: WEB has sound: while a web page is open (YouTube and the like) the Jetson sends the page's sound and the box plays it.
 // 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
 // 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
@@ -163,6 +163,7 @@ uint16_t *maryBig = NULL, *maryFace = NULL;
 volatile bool callMode = false, callSent = false, callIn = false; bool nowOn = false; volatile uint16_t callId = 0, callTot = 0, callGot = 0; volatile unsigned long callAt = 0; uint16_t callMine = 0;
 uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bool callUdpOn = false;
 #define CALL_PAY 240
+bool prayOn = false; uint32_t prayHz = 0;                        // 6.7: the PRAYER page, and the signal it puts out (in hertz)
 bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = false; char callTxt[208]; uint16_t callSeen[6]; int callSeenK = 0; unsigned long pcAt = 0; WiFiUDP callUdpTxt;
 volatile bool muPlay = false;
 bool webFull = true, webKb = false, webSkip = false; volatile bool muReal = false; int jpgMode = -1;
@@ -429,7 +430,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "6.6"
+#define BOX_VER "6.7"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6453,7 +6454,7 @@ bool nameHas(int i, const char* w){ return nm[i].indexOf(w) >= 0; }
 bool isDoor(int i){ return i < NREL && (nameHas(i, "GARAGE") || nameHas(i, "DOOR") || nameHas(i, "GATE")) && !nameHas(i, "LIGHT"); }      // a door gets one short press
 bool tileBuzz(int i){ return i == NREL - 1 && buzzIs4(); }
 // 6.2: ONE long page.  All the buttons in rows of three; a finger drags the rows up and down (no more MORE and BACK).  pgNo is the row at the top.
-static const uint8_t TL[] = {0, 1, 2, 3, 4, 16, 9, 18, 10, 12, 14, 15, 6, 13, 7, 8};
+static const uint8_t TL[] = {0, 1, 2, 3, 4, 16, 9, 18, 10, 12, 14, 15, 6, 13, 7, 8, 19};
 #define TLN ((int)sizeof(TL))
 #define TLROWS ((TLN + 2) / 3)
 int pgY = 0;                                                      // 6.3: how far the long page is slid up, in dots.  It glides with the finger
@@ -6481,25 +6482,49 @@ void drawTile(int slot){
   bool used = tileUsed(id), isOn = tileOn(id), door = id < NREL && isDoor(id);
   uint16_t tint = !used ? rgb(70, 78, 92) : isOn ? rgb(255, 196, 40) : door ? rgb(40, 120, 240) : id == 4 ? rgb(150, 70, 220) : id == 6 ? rgb(20, 170, 150) : id == 7 ? rgb(50, 50, 130)
                 : id == 8 ? rgb(205, 60, 60) : id == 9 ? rgb(150, 70, 220) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11 || id == 17) ? rgb(60, 100, 170)
-                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : id == 18 ? rgb(40, 110, 235) : rgb(14, 34, 84);
+                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : id == 18 ? rgb(40, 110, 235) : id == 19 ? rgb(200, 150, 30) : rgb(14, 34, 84);
   cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);              // the dark slab underneath: the button stands up off the picture
   cvGlass(x, y, 100, 77, 14, tint, isOn ? 195 : 165, 0);
   const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_MORE
-                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK : id == 18 ? IC_MUSIC
+                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK : id == 18 ? IC_MUSIC : id == 19 ? IC_STAR
                      : tileBuzz(id) ? IC_BELL : door ? IC_GARAGE : (nameHas(id, "LIGHT") || nameHas(id, "LAMP")) ? IC_LIGHT : IC_PLUG;
   cvSprite(x + 7, y + 6, ic);
   String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String(">>")
             : id == 12 ? String("GO") : id == 13 ? (WiFi.status() == WL_CONNECTED ? String(wifiBars()) + "/4" : String("--")) : id == 14 ? String("HOLD")
-            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<") : id == 18 ? String(isOn ? "ON" : "BT")
+            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<") : id == 18 ? String(isOn ? "ON" : "BT") : id == 19 ? String("333K")
             : !used ? String("--") : door ? String("TAP") : isOn ? String("ON") : String("OFF");
   cvText(x + 100 - 7 - (int)st.length() * FW, y + 10, st.c_str(), 0xFFFF, 1);
   String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("MORE")
-              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : id == 18 ? String("PHONE BT") : nm[id];
+              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : id == 18 ? String("PHONE BT") : id == 19 ? String("PRAYER") : nm[id];
   if(name.length() > 8) name = name.substring(0, 8);
   cvText(x + (100 - (int)name.length() * FW) / 2, y + 47, name.c_str(), 0xFFFF, 1);
 }
+// 6.7 the PRAYER page.  While it is open the box puts a real electrical signal of about 333,000 hertz on one pin
+// (yellow board: its own blue light, pin 17.  Black box: the spare pin IO21).  It is an electrical signal, not a sound.
+int prayPin(){ int p = board == 3 ? 17 : board == 2 ? 21 : -1; for(int i = 0; i < NREL; i++) if(p >= 0 && pins[i] == p) p = -1; if(p >= 0 && p == bzPin) p = -1; return p; }
+void prayStart(){
+  int p = prayPin(); prayHz = 0; if(p < 0) return;
+  prayHz = (uint32_t)(ledcSetup(6, 333000, 2) + 0.5);             // the chip tells back the pitch it really makes
+  ledcAttachPin(p, 6); ledcWrite(6, 2);                           // half on, half off
+}
+void prayStop(){
+  int p = prayPin(); prayHz = 0; if(p < 0) return;
+  ledcWrite(6, 0); ledcDetachPin(p); pinMode(p, OUTPUT); digitalWrite(p, board == 3 ? HIGH : LOW);      // quiet again (the yellow board's light is off when the pin is high)
+}
+void paintPray(){
+  cvGlass(0, 0, LCD_W, 30, 0, rgb(6, 14, 40), 190, 0);
+  cvText(8, 3, "PRAYER TO JESUS", rgb(255, 220, 90), 1);
+  cvGlass(4, 33, LCD_W - 8, 120, 12, rgb(14, 34, 84), 170, 0);
+  static const char* const PL[5] = {"Lord Jesus, thank You", "for this day. Bless", "this home and all in it.", "Give us rest, health", "and peace. Amen."};
+  for(int i = 0; i < 5; i++) cvText((LCD_W - (int)strlen(PL[i]) * FW) / 2, 39 + i * 22, PL[i], 0xFFFF, 1);
+  String sg = prayHz ? String("SIGNAL ") + String(prayHz) + " HZ ON" : String("SIGNAL PIN NOT FREE");
+  cvText((LCD_W - (int)sg.length() * FW) / 2, 158, sg.c_str(), prayHz ? rgb(140, 255, 170) : rgb(255, 170, 120), 1);
+  cvGlass(87, 189, 150, 44, 10, 0x0000, 140, 1); cvGlass(85, 184, 150, 44, 10, rgb(225, 50, 60), 190, 0);
+  cvText(85 + (150 - 4 * FW) / 2, 195, "EXIT", 0xFFFF, 1);
+}
 void paintScene(){                                                 // paints whatever part of the screen lies in the strip being built
   if(kbOn){ paintKb(); return; }
+  if(prayOn){ paintPray(); return; }
   if(callOn){ paintCall(); return; }                                  // the keyboard and the Wi-Fi page fill the whole screen
   if(wfOn){ paintWf(); return; }
   String net = apUp ? "SETUP" : (WiFi.status() != WL_CONNECTED ? "NO NET" : ((subOk && httpCode == 200) ? "READY" : "ONLINE"));
@@ -6550,6 +6575,7 @@ void lcdDraw(bool force){
   if(camOn) return;                                               // the drain picture is on the screen
   if((webOn || phOn || pcOn) && !kbOn) return;                            // a web page or a photo is on the screen
   if(kbOn) key += "|k" + String(kbFor) + String(kbShift ? 1 : 0) + String(kbSym ? 1 : 0) + kbText;
+  if(prayOn) key += "|p" + String(prayHz);
   if(callOn) key += "|c" + callMsg + String(aiState) + String(callMode ? 1 : 0) + WiFi.gatewayIP().toString();
   if(wfOn){ key += "|w" + String(wfN) + WiFi.localIP().toString(); for(int i = 0; i < wfN && i < 5; i++) key += wfName[i] + String(barsOf(wfRs[i])); }
   key += "|d" + String(drainWet) + String(drainTile(2) ? 1 : 0);
@@ -6755,6 +6781,7 @@ void tileTap(int slot){                                            // a finger o
     sdWant = sdSongN + NRADIO; musicOn = true; showMsg("BLUETOOTH: MARY BOX"); return; }
   if(id == 12){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; return; }
   if(id == 13){ wfOn = true; wfN = -1; return; }                 // -1: look for Wi-Fi right after the screen says so
+  if(id == 19){ prayOn = true; prayStart(); return; }             // the PRAYER page, with its signal
   if(id == 14){ callOn = true; return; }                          // the CALL page: talk, type, camera
   if(id == 15){ if(!sdPicN){ showMsg("NO PHOTOS ON SD CARD"); return; } phOn = true; phAt = 0; return; }
   if(id == 16){ if(!gKey.length() && !hubHost.length()){ showMsg("MARY NEEDS THE KEY"); return; } jetOn = true; ansPg = 0; hubAt = 0; return; }
@@ -6849,7 +6876,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 6.6. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 6.7. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -6881,7 +6908,7 @@ void tpLoop(){
   int x = 0, y = 0; bool down = board == 3 ? tpRead3(x, y) : tpRead(x, y);
   if(board == 3){ static int n3 = 0; if(down){ if(++n3 < 2) down = false; } else n3 = 0; }      // a pressed screen must hold for two looks: no ghost taps
   if(webOn && !kbOn && !asleep && !camOn){ webTp(down, x, y, now); tpDown = down; return; }      // a web page: tap, or drag to scroll
-  { bool home = !kbOn && !wfOn && !callOn && !gameOn && !jetOn && !phOn && !pcOn && !camOn && !asleep;
+  { bool home = !kbOn && !wfOn && !callOn && !prayOn && !gameOn && !jetOn && !phOn && !pcOn && !camOn && !asleep;
     if(!home) hDn = false;
     else if(hDn || (down && !tpDown && y >= 31 && y < 203)){ homeTp(down, x, y, now); tpDown = down || hDn; return; } }
   if(down && !tpDown && now - tpAt > (kbOn ? 140UL : gameOn ? 160UL : 280UL)){
@@ -6892,6 +6919,7 @@ void tpLoop(){
     if((phOn || pcOn) && !kbOn){ if(pcOn){ pcOn = false; fxNote(600, 60); } else phTouch(x, y); if(!phOn && !pcOn){ lcdShown = ""; lcdDraw(true); } tpDown = true; return; }
     if(kbOn) kbTouch(x, y);
     else if(wfOn) wfTouch(x, y);
+    else if(prayOn){ if(y >= 178){ prayOn = false; prayStop(); fxNote(600, 60); } }      // EXIT
     else if(callOn) callTouch(x, y);
     else if(gameOn){
       if((x > 215 && y < 40) || (x >= 256 && y >= 140 && y < 204)){ gameOn = false; fxNote(600, 60); }
