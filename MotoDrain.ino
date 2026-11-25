@@ -1,4 +1,4 @@
-// MOTODRAIN_VERSION 1.2   (the build names the file with this number)
+// MOTODRAIN_VERSION 1.3   (the build names the file with this number)
 // Moto Drain Watch - ESP32-S3 N16R8 + OV7670 FIFO camera (22 pins) + 2 water wires + beeper
 // 1.1: friendly water + smiley look, phone alerts anywhere (ntfy) with a picture,
 //      good-morning "pan is dry" picture every day at 9 AM, Wi-Fi list to pick from,
@@ -7,6 +7,13 @@
 //      (ntfy button + link), password eye, Forget Wi-Fi, MotoDrain hotspot turns off
 //      once home Wi-Fi works (comes back if Wi-Fi is lost), Wi-Fi list always works.
 //      Christmas + UFO look. Page code and MotoDrain hotspot password: Shocker1
+// 1.3: Wi-Fi holds on: no power-save sleep, full radio power, auto-reconnect,
+//      restarts itself if Wi-Fi is gone 5 minutes. Water alert is MAX priority so
+//      the phone keeps ringing. Every alert has "Open page" with the board's address.
+//      Sends a new message if its address changes. Shows Wi-Fi signal strength.
+//      Camera sends small JPEG pictures (10x less data = fast on weak Wi-Fi).
+//      A water alert that could not be sent is retried every minute until it goes out.
+//      Page opens with no code; only Save/Forget Wi-Fi ask for the code (Shocker1).
 // (c) Moto Takeda 316-304-5398
 //
 // WIRING (camera pin -> board pin)
@@ -64,9 +71,10 @@ bool apOn = true;
 
 String snapTopic() { return topic + "-snap"; }
 String snapLink() { return "https://ntfy.sh/" + snapTopic() + "/publish?message=snap"; }
-bool ok() {
+bool ok() { return true; }   // alarm page opens without a code (Terry doesn't have to type)
+bool okSetup() {              // only Wi-Fi changes still need the code
   if (server.arg("k") == code) return true;
-  server.send(403, "text/plain", "Code needed");
+  server.send(403, "text/plain", "Setup code needed");
   return false;
 }
 
@@ -216,7 +224,7 @@ bool pushPhone(const String &title, const String &msg, const char *tags, const c
   h.addHeader("Tags", tags);
   h.addHeader("Priority", prio);
   h.addHeader("Click", myLink());
-  h.addHeader("Actions", "http, New picture, https://ntfy.sh/" + snapTopic() + ", method=POST, body=snap, clear=true");
+  h.addHeader("Actions", "http, New picture, https://ntfy.sh/" + snapTopic() + ", method=POST, body=snap, clear=true; view, Open page, " + myLink() + "/?k=" + code);
   int rc;
   uint8_t *jpg = nullptr;
   size_t len = 0;
@@ -265,10 +273,12 @@ void waterLoop() {
     wet = false;
     pushPhone("Drain pan is dry again", "All good now. Thank you!", "smile,droplet", "default", false);
   }
-  if (wet && (lastWetAlert == 0 || millis() - lastWetAlert > 2UL * 3600UL * 1000UL)) {
-    lastWetAlert = millis();
-    pushPhone("WATER in the drain pan!", "Please check the AC drain. Picture attached.", "warning,droplet", "high", true);
+  static uint32_t lastTry = 0;
+  if (wet && (lastWetAlert == 0 || millis() - lastWetAlert > 2UL * 3600UL * 1000UL) && (lastTry == 0 || millis() - lastTry > 60000)) {
+    lastTry = millis();
+    if (pushPhone("WATER in the drain pan!", "Please check the AC drain. Picture attached.", "warning,droplet", "max", true)) lastWetAlert = millis();
   }
+  if (!wet) lastTry = 0;
   if (wet && millis() > silenceUntil && millis() - lastBeep > 1500) {
     lastBeep = millis();
     beep(150); delay(100); beep(150);
@@ -284,7 +294,7 @@ void dailyLoop() {
   if (!getLocalTime(&t, 10)) return;
   if (t.tm_hour == 9 && t.tm_yday != lastDay) {
     lastDay = t.tm_yday;
-    if (wet) pushPhone("Good morning - WATER in the pan", "The drain pan has water. Please check it.", "warning,droplet", "high", true);
+    if (wet) pushPhone("Good morning - WATER in the pan", "The drain pan has water. Please check it.", "warning,droplet", "max", true);
     else pushPhone("Good morning! Drain pan is DRY", "Everything looks good today. Have a blessed day!", "smile,sunny", "default", true);
   }
 }
@@ -357,7 +367,7 @@ input[type=range]{padding:0;height:6px;accent-color:var(--g1)}
 <div class=grid><button onclick="go('/beep')">&#128264; Test beep</button><button onclick="go('/silence')">&#128263; Quiet 30 min</button>
 <button class="grn full" onclick="if(confirm('Is the pan dry right now?'))go('/dry')">&#128077; Pan is dry now</button></div>
 <div class=info id=info></div></div>
-<div class=card><p class=lbl>Camera</p><div class=cam><canvas id=cv width=320 height=240></canvas><span class=tag id=ct>Picture</span></div>
+<div class=card><p class=lbl>Camera</p><div class=cam><img id=cv alt="" style="width:100%;height:100%;display:block;object-fit:cover"><span class=tag id=ct>Picture</span></div>
 <div class=grid><button class=pri onclick=snap()>&#128247; Take picture</button><button id=lb onclick=live()>&#127909; Live: off</button>
 <button onclick="go('/flip')">&#128260; Flip</button><button onclick="go('/swap')">&#127752; Fix colors</button>
 <button class="full" onclick="go('/send')">&#128241; Send picture to phones</button></div><div class=info id=cm></div></div>
@@ -371,6 +381,7 @@ input[type=range]{padding:0;height:6px;accent-color:var(--g1)}
 <div class=ft>(c) Moto Takeda 316-304-5398</div></div>
 <script>
 var K='',lv=false,busy=false;try{K=localStorage.k||''}catch(e){}
+var uk=new URLSearchParams(location.search).get('k');if(uk){K=uk;try{localStorage.k=K}catch(e){}}
 function $(i){return document.getElementById(i)}
 function A(u){return u+(u.indexOf('?')<0?'?':'&')+'k='+encodeURIComponent(K)}
 function bad(r){if(r.status==403){$('login').style.display='flex';throw 0}return r}
@@ -381,24 +392,23 @@ $('sub').textContent=j.wet?'Please check the AC drain':'Everything looks good';
 $('info').textContent='Wi-Fi: '+j.ip+'  |  sensor '+j.now+' / dry '+j.base+(j.quiet?'  |  quiet':'');
 $('cm').textContent=j.cam;$('sv').textContent=j.sens;$('se').value=j.sens;
 $('al').href=j.alert;$('al').textContent=j.alert;$('sl').href=j.snap;$('sl').textContent=j.snap}).catch(()=>{})}
-function draw(raw){var c=$('cv'),x=c.getContext('2d'),im=x.createImageData(320,240),d=im.data;
-for(var i=0;i<76800;i++){var v=raw[i*2]<<8|raw[i*2+1],o=i*4;d[o]=(v>>11&31)*255/31;d[o+1]=(v>>5&63)*255/63;d[o+2]=(v&31)*255/31;d[o+3]=255}x.putImageData(im,0,0);
-$('ct').textContent=new Date().toLocaleTimeString()}
-function snap(){if(busy)return;busy=true;fetch(A('/frame')).then(bad).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer()}).then(b=>{draw(new Uint8Array(b));busy=false;if(lv)setTimeout(snap,300)})
-.catch(()=>{busy=false;st();if(lv)setTimeout(snap,2000)})}
+function snap(){if(busy)return;busy=true;var im=new Image(),t0=Date.now(),to=setTimeout(function(){im.src='';fail()},15000);
+function fail(){busy=false;st();if(lv)setTimeout(snap,2000)}
+im.onload=function(){clearTimeout(to);$('cv').src=im.src;$('ct').textContent=new Date().toLocaleTimeString();busy=false;if(lv)setTimeout(snap,200)};
+im.onerror=function(){clearTimeout(to);fail()};im.src=A('/pic.jpg?t='+t0)}
 function live(){lv=!lv;$('lb').innerHTML=lv?'&#127909; Live: on':'&#127909; Live: off';if(lv)snap()}
 function scan(){$('s').innerHTML='<option>Looking...</option>';fetch(A('/scan')).then(bad).then(r=>r.json()).then(l=>{$('s').innerHTML='<option value="">Pick Wi-Fi...</option>'+l.map(n=>'<option>'+n.replace(/</g,'')+'</option>').join('')}).catch(()=>{})}
-function save(){if(!$('s').value){alert('Pick a Wi-Fi first');return}
+function save(){if(!$('s').value){alert('Pick a Wi-Fi first');return}if(!K){K=prompt('Setup code')||'';try{localStorage.k=K}catch(e){}}
 fetch(A('/save?s='+encodeURIComponent($('s').value)+'&p='+encodeURIComponent($('p').value))).then(bad).then(r=>r.text()).then(t=>alert(t)).catch(()=>{})}
 (function(){var c=$('snow'),x=c.getContext('2d'),f=[];function rs(){c.width=innerWidth;c.height=innerHeight}rs();addEventListener('resize',rs);
 for(var i=0;i<70;i++)f.push({x:Math.random()*innerWidth,y:Math.random()*innerHeight,r:1+Math.random()*2.6,s:.4+Math.random()*1.1,d:Math.random()*6});
 (function a(){x.clearRect(0,0,c.width,c.height);x.fillStyle='rgba(255,255,255,.85)';f.forEach(function(p){p.y+=p.s;p.d+=.02;p.x+=Math.sin(p.d)*.5;if(p.y>c.height){p.y=-5;p.x=Math.random()*c.width}x.beginPath();x.arc(p.x,p.y,p.r,0,7);x.fill()});requestAnimationFrame(a)})()})();
-if(!K)$('login').style.display='flex';else{st();snap()}setInterval(st,2500);
+st();snap();setInterval(st,2500);
 </script></body></html>)HTML";
 
 void handleStatus() {
   if (!ok()) return;
-  String ip = WiFi.status() == WL_CONNECTED ? WiFi.SSID() + " " + WiFi.localIP().toString() : String("not joined yet");
+  String ip = WiFi.status() == WL_CONNECTED ? WiFi.SSID() + " " + WiFi.localIP().toString() + " (signal " + String(WiFi.RSSI()) + ")" : String("not joined yet");
   String j = "{\"wet\":" + String(wet ? "true" : "false") + ",\"now\":" + touchNow + ",\"base\":" + touchBase +
              ",\"sens\":" + sens + ",\"ip\":\"" + ip + "\",\"quiet\":" + String(millis() < silenceUntil ? "true" : "false") +
              ",\"cam\":\"" + camMsg + "\",\"alert\":\"https://ntfy.sh/" + topic + "\",\"snap\":\"" + snapLink() + "\"}";
@@ -449,7 +459,7 @@ void handleScan() {
 }
 
 void handleSave() {
-  if (!ok()) return;
+  if (!okSetup()) return;
   if (server.arg("s") == ssid && server.arg("p") == pass && WiFi.status() == WL_CONNECTED) {
     server.send(200, "text/plain", "Already saved and working.");
     return;
@@ -466,13 +476,13 @@ void handleSave() {
 
 // "New picture" from anywhere: watch the snap topic on ntfy
 void snapLoop() {
-  if (WiFi.status() != WL_CONNECTED || millis() - lastPoll < 15000) return;
+  if (WiFi.status() != WL_CONNECTED || wet || millis() - lastPoll < 30000) return;
   lastPoll = millis();
   WiFiClientSecure cli;
   cli.setInsecure();
   HTTPClient h;
   if (!h.begin(cli, "https://ntfy.sh/" + snapTopic() + "/json?poll=1&since=" + snapSince)) return;
-  h.setTimeout(6000);
+  h.setTimeout(4000);
   int rc = h.GET();
   String body = rc == 200 ? h.getString() : String("");
   h.end();
@@ -513,7 +523,11 @@ void setup() {
     prefs.putString("t", topic);
   }
 
+  WiFi.persistent(false);
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);                       // never doze - keeps the page and alerts fast
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);        // full radio power for a far router
+  WiFi.setAutoReconnect(true);
   WiFi.softAP("MotoDrain", code.c_str());
   if (ssid.length()) {
     WiFi.begin(ssid.c_str(), pass.c_str());
@@ -545,7 +559,7 @@ void setup() {
     server.send(200, "text/plain", "Sending the picture to your phones...");
   });
   server.on("/forget", [] {
-    if (!ok()) return;
+    if (!okSetup()) return;
     prefs.remove("s");
     prefs.remove("p");
     server.send(200, "text/plain", "Wi-Fi forgotten. Restarting - join MotoDrain to set it up again.");
@@ -578,10 +592,16 @@ void loop() {
   // MotoDrain hotspot: off while home Wi-Fi works, back on if Wi-Fi is lost
   if (WiFi.status() == WL_CONNECTED) {
     lostSince = 0;
-    if (apOn && millis() > 60000) { WiFi.softAPdisconnect(true); apOn = false; }
+    if (apOn && millis() > 120000 && WiFi.softAPgetStationNum() == 0) { WiFi.enableAP(false); apOn = false; }
+    static String lastIp = "";
+    String ipNow = WiFi.localIP().toString();
+    if (joinedMsg && lastIp.length() && ipNow != lastIp)
+      pushPhone("Moto Drain Watch has a new address", "Tap Open page: " + myLink(), "smile,droplet", "default", false);
+    lastIp = ipNow;
   } else {
     if (!lostSince) lostSince = millis();
-    if (!apOn && millis() - lostSince > 90000) { WiFi.mode(WIFI_AP_STA); WiFi.softAP("MotoDrain", code.c_str()); apOn = true; }
+    if (!apOn && millis() - lostSince > 60000) { WiFi.enableAP(true); WiFi.softAP("MotoDrain", code.c_str()); apOn = true; }
+    if (ssid.length() && millis() - lostSince > 300000 && WiFi.softAPgetStationNum() == 0) ESP.restart();   // stuck 5 min: fresh start
     static uint32_t retry = 0;
     if (ssid.length() && WiFi.softAPgetStationNum() == 0 && millis() - retry > 30000) {
       retry = millis();
@@ -589,4 +609,5 @@ void loop() {
     }
   }
   snapLoop();
+  if (ESP.getFreeHeap() < 30000) ESP.restart();
 }
