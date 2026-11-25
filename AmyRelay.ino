@@ -45,6 +45,12 @@
 #else
 #define CYD 0
 #endif
+// one reader for Google's answer: handles the chunked pieces
+struct GRead { WiFiClientSecure* c; bool chunked; long left; uint8_t b[1024]; int n, i; unsigned long t;
+  int raw(){ if(i >= n){ n = 0; i = 0; unsigned long t0 = millis(); while(n <= 0 && millis() - t0 < 15000){ if(c->available()) n = c->read(b, sizeof(b)); else if(!c->connected()) return -1; else delay(2); } if(n <= 0) return -1; } return b[i++]; }
+  String line(){ String s; int ch; while((ch = raw()) >= 0 && ch != '\n'){ if(ch != '\r') s += (char)ch; } return s; }
+  int get(){ if(!chunked) return raw(); if(left == 0){ String l = line(); if(!l.length()) l = line(); left = strtol(l.c_str(), NULL, 16); if(left <= 0) return -1; } int ch = raw(); if(ch >= 0) left--; return ch; }
+};
 
 #define NREL 4
 #define BOOT_PIN 0
@@ -6975,12 +6981,6 @@ String sysText(){
          "Answer in one to three short, friendly sentences with plain words. No lists, no symbols, no emojis. The box switches: " + n + ". "
          "If the person asks to turn the light on, start your answer with [LIGHT ON]. To turn it off, start with [LIGHT OFF]. To open or close the garage door, start with [GARAGE]. Otherwise use no brackets.";
 }
-// one reader for Google's answer: handles the chunked pieces
-struct GRead { WiFiClientSecure* c; bool chunked; long left; uint8_t b[1024]; int n, i; unsigned long t;
-  int raw(){ if(i >= n){ n = 0; i = 0; unsigned long t0 = millis(); while(n <= 0 && millis() - t0 < 15000){ if(c->available()) n = c->read(b, sizeof(b)); else if(!c->connected()) return -1; else delay(2); } if(n <= 0) return -1; } return b[i++]; }
-  String line(){ String s; int ch; while((ch = raw()) >= 0 && ch != '\n'){ if(ch != '\r') s += (char)ch; } return s; }
-  int get(){ if(!chunked) return raw(); if(left == 0){ String l = line(); if(!l.length()) l = line(); left = strtol(l.c_str(), NULL, 16); if(left <= 0) return -1; } int ch = raw(); if(ch >= 0) left--; return ch; }
-};
 int gHead(GRead& r){                                              // the status line and headers; gives back the status number
   String st = r.line(); int code = st.length() > 12 ? st.substring(9, 12).toInt() : 0;
   r.chunked = false; r.left = 0;
