@@ -1,4 +1,5 @@
-// AMYRELAY_VERSION 5.9   (the build names the files with this number)
+// AMYRELAY_VERSION 6.2   (the build names the files with this number)
+// 6.0: WEB has sound: while a web page is open (YouTube and the like) the Jetson sends the page's sound and the box plays it.
 // 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
 // 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
 //      EXIT. Phones join through the Jetson: its phone page talks, types and shows its camera to the boxes (https://<jetson>:8092).
@@ -154,7 +155,8 @@ String wfName[5]; int wfRs[5]; int wfN = 0;
 unsigned long webAt = 0, phAt = 0; IPAddress webIp;
 uint8_t *webPx = NULL, *webJpg = NULL;
 #define WEBJ 150000
-#define MU_N 16384
+#define MU_N 65536
+#define NF_N 262144
 String sdSong[60], sdPic[60]; int sdSongN = 0, sdPicN = 0, phCur = 0; volatile int sdCur = 0, sdWant = -1; bool sdOk = false;
 int16_t* muBuf = NULL; volatile uint32_t muH = 0, muT = 0;
 uint16_t *maryBig = NULL, *maryFace = NULL;
@@ -162,6 +164,7 @@ volatile bool callMode = false, callSent = false, callIn = false; bool nowOn = f
 uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bool callUdpOn = false;
 #define CALL_PAY 240
 bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = false; char callTxt[208]; uint16_t callSeen[6]; int callSeenK = 0; unsigned long pcAt = 0; WiFiUDP callUdpTxt;
+volatile bool muPlay = false;
 bool webFull = true, webKb = false, webSkip = false; volatile bool muReal = false; int jpgMode = -1;
 String wxText = ""; unsigned long wxAt = 0;
 #define NRADIO 4
@@ -6158,8 +6161,10 @@ void auFill(int16_t* buf, int n){                                // makes the ne
       if(clipNew){ clipNew = false; cp = clipP; cn = clipN; cpos = 0; }
       if(cp){ uint32_t k = cpos >> 1; if(k < cn){ s += ((int)pgm_read_byte(cp + k) - 128) * 190; cpos++; } else cp = NULL; }
     }
-    if(musicOn && muReal){                                        // real music: internet radio or a song from the SD card
-      if(muBuf && muH != muT){ int mv = muBuf[muT & (MU_N - 1)]; s += vPlay ? (mv >> 3) : ((mv * 3) >> 2); muT++; }      // quiet while Mary talks
+    if(muPlay){                                                   // real music (or the sound of a web page): internet radio or a song from the SD card
+      static bool muGo = false; uint32_t av = muH - muT;
+      if(!muGo && av >= 8000) muGo = true;                        // ran dry: wait for half a second of sound, so it never stutters
+      if(muBuf && muGo){ if(av){ int mv = muBuf[muT & (MU_N - 1)]; s += vPlay ? (mv >> 3) : ((mv * 3) >> 2); muT++; } else muGo = false; }      // quiet while Mary talks
     }
     else if(musicOn){
       if(muLeft <= 0){
@@ -6445,11 +6450,18 @@ void paintJet(){
 bool nameHas(int i, const char* w){ return nm[i].indexOf(w) >= 0; }
 bool isDoor(int i){ return i < NREL && (nameHas(i, "GARAGE") || nameHas(i, "DOOR") || nameHas(i, "GATE")) && !nameHas(i, "LIGHT"); }      // a door gets one short press
 bool tileBuzz(int i){ return i == NREL - 1 && buzzIs4(); }
+// 6.2: ONE long page.  All the buttons in rows of three; a finger drags the rows up and down (no more MORE and BACK).  pgNo is the row at the top.
+static const uint8_t TL[] = {0, 1, 2, 3, 4, 16, 9, 18, 10, 12, 14, 15, 6, 13, 7, 8};
+#define TLN ((int)sizeof(TL))
+#define TLROWS ((TLN + 2) / 3)
+int tileId(int slot){ int p = pgNo * 3 + slot; return (p >= 0 && p < TLN) ? TL[p] : -1; }
+bool btSel(){ return sdCur == sdSongN + NRADIO; }
 bool tileUsed(int id){ return true; }
-bool tileOn(int id){ return id == 4 ? (bool)musicOn : (id < NREL ? (tileBuzz(id) ? bzAlarm : on[id]) : false); }
+bool tileOn(int id){ return id == 18 ? (musicOn && btSel()) : id == 4 ? (bool)musicOn : (id < NREL ? (tileBuzz(id) ? bzAlarm : on[id]) : false); }
 bool drainTile(int id){ return id == 2 && pins[2] < 0 && drainIp.length() && millis() - drainSeen < 120000UL; }
 void drawTile(int slot){
-  int id = pgNo * 6 + slot, x = 5 + (slot % 3) * 105, y = 33 + (slot / 3) * 85;
+  int id = tileId(slot), x = 5 + (slot % 3) * 105, y = 33 + (slot / 3) * 85;
+  if(id < 0) return;
   if(drainTile(id)){
     if(y + 84 <= cvY0 || y >= cvY0 + cvHh) return;
     bool wet = drainWet == 1;
@@ -6465,20 +6477,20 @@ void drawTile(int slot){
   bool used = tileUsed(id), isOn = tileOn(id), door = id < NREL && isDoor(id);
   uint16_t tint = !used ? rgb(70, 78, 92) : isOn ? rgb(255, 196, 40) : door ? rgb(40, 120, 240) : id == 4 ? rgb(150, 70, 220) : id == 6 ? rgb(20, 170, 150) : id == 7 ? rgb(50, 50, 130)
                 : id == 8 ? rgb(205, 60, 60) : id == 9 ? rgb(150, 70, 220) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11 || id == 17) ? rgb(60, 100, 170)
-                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : rgb(14, 34, 84);
+                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : id == 18 ? rgb(40, 110, 235) : rgb(14, 34, 84);
   cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);              // the dark slab underneath: the button stands up off the picture
   cvGlass(x, y, 100, 77, 14, tint, isOn ? 195 : 165, 0);
   const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_MORE
-                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK
+                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK : id == 18 ? IC_MUSIC
                      : tileBuzz(id) ? IC_BELL : door ? IC_GARAGE : (nameHas(id, "LIGHT") || nameHas(id, "LAMP")) ? IC_LIGHT : IC_PLUG;
   cvSprite(x + 7, y + 6, ic);
   String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String(">>")
             : id == 12 ? String("GO") : id == 13 ? (WiFi.status() == WL_CONNECTED ? String(wifiBars()) + "/4" : String("--")) : id == 14 ? String("HOLD")
-            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<")
+            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<") : id == 18 ? String(isOn ? "ON" : "BT")
             : !used ? String("--") : door ? String("TAP") : isOn ? String("ON") : String("OFF");
   cvText(x + 100 - 7 - (int)st.length() * FW, y + 10, st.c_str(), 0xFFFF, 1);
   String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("MORE")
-              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : nm[id];
+              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : id == 18 ? String("PHONE BT") : nm[id];
   if(name.length() > 8) name = name.substring(0, 8);
   cvText(x + (100 - (int)name.length() * FW) / 2, y + 47, name.c_str(), 0xFFFF, 1);
 }
@@ -6512,6 +6524,8 @@ void paintScene(){                                                 // paints wha
     for(int i = 0; i < 4; i++)                                     // the Wi-Fi bars
       cvBox(nx - 36 + i * 8, 26 - (i + 1) * 5 - 1, 6, (i + 1) * 5 + 1, i < wb ? (wb >= 3 ? rgb(120, 255, 150) : wb == 2 ? rgb(255, 214, 90) : rgb(255, 90, 90)) : rgb(70, 80, 100));
     for(int i = 0; i < 6; i++) drawTile(i);
+    cvBox(317, 34, 3, 168, rgb(40, 50, 80));                       // the slim bar on the right shows where you are on the long page
+    { int th = 168 * 2 / TLROWS, ty = 34 + (168 - th) * pgNo / (TLROWS > 2 ? TLROWS - 2 : 1); cvBox(317, ty, 3, th, rgb(235, 240, 255)); }
     foot = (!apUp && gKey.length() && WiFi.status() == WL_CONNECTED) ? String("TAP ME TO TALK") : apUp ? (((millis() / 3000) & 1) && ssid.length() ? wifiWhy() : String("SETUP: ") + AP_NAME) : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : wifiWhy());
   }
   if(msgUntil && (long)(msgUntil - millis()) > 0) foot = msgText;
@@ -6723,13 +6737,15 @@ void gTap(int cell){
   gCheck();
 }
 void tileTap(int slot){                                            // a finger on a button
-  int id = pgNo * 6 + slot;
+  int id = tileId(slot);
+  if(id < 0) return;
   fxNote(1500, 30);
   if(drainTile(id)){ camOn = true; camAt = 0; camOpened = millis(); return; }
   if(id == 4){ musicOn = !musicOn; sayClip(musicOn ? 7 : 8); showMsg(musicOn ? (realMusic() ? songName(sdCur) : String("MUSIC ON")) : String("MUSIC OFF")); return; }
-  if(id == 5){ pgNo = 1; return; }
-  if(id == 11){ pgNo = 2; return; }
-  if(id == 17){ pgNo = 0; return; }
+  if(id == 18){                                                    // the phone's music by Bluetooth: the phone plays to the Jetson, the Jetson hands it to this box
+    if(musicOn && btSel()){ musicOn = false; sdWant = 0; sayClip(8); showMsg("PHONE MUSIC OFF"); return; }
+    if(!muBuf || WiFi.status() != WL_CONNECTED){ showMsg("NEEDS WI-FI + JETSON"); return; }
+    sdWant = sdSongN + NRADIO; musicOn = true; showMsg("BLUETOOTH: MARY BOX"); return; }
   if(id == 12){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; return; }
   if(id == 13){ wfOn = true; wfN = -1; return; }                 // -1: look for Wi-Fi right after the screen says so
   if(id == 14){ callOn = true; return; }                          // the CALL page: talk, type, camera
@@ -6739,7 +6755,7 @@ void tileTap(int slot){                                            // a finger o
   if(id == 7){ lcdSleep(true); return; }
   if(id == 8){ for(int i = 0; i < NREL; i++) setRelay(i, false); if(bzAlarm) setBuzz(false); musicOn = false; fxNote(600, 90); fxNote(400, 170); sayClip(13); showMsg("ALL OFF"); reportTag = ""; needReport = true; return; }
   if(id == 9){
-    if(realMusic()){ int k = (sdCur + 1) % (sdSongN + NRADIO); sdWant = k; musicOn = true; showMsg(songName(k)); return; }      // the next station or SD card song
+    if(realMusic()){ int k = btSel() ? 0 : (sdCur + 1) % (sdSongN + NRADIO); sdWant = k; musicOn = true; showMsg(songName(k)); return; }      // the next station or SD card song
     int k = (song + 1) % 4; songWant = k; musicOn = true; showMsg(SONG_NAME[k]); return; }
   if(id == 10){ volSet = volSet % 3 + 1; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); fxNote(784, 200); sayClip(9); showMsg(String("LOUD ") + String(volSet)); return; }
   if(tileBuzz(id)){ setBuzz(!bzAlarm); if(!bzAlarm) sayClip(6); showMsg(bzAlarm ? "BUZZER ON" : "BUZZER OFF"); }
@@ -6826,8 +6842,26 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 5.9. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 6.2. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
+}
+bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hYs = 0, hUp = 0;
+void homeTp(bool down, int x, int y, unsigned long now){          // the long page of buttons: a short touch presses a button, a slide moves the rows
+  if(down){
+    hUp = 0;
+    if(!hDn){ hDn = true; hDrag = false; hX0 = x; hY0 = hYs = y; lastTouch = now; return; }
+    int dy = y - hYs;
+    if(dy >= 36 || dy <= -36){
+      hDrag = true; hYs = y; lastTouch = now;
+      int np = pgNo + (dy < 0 ? 1 : -1); if(np > TLROWS - 2) np = TLROWS - 2; if(np < 0) np = 0;
+      if(np != pgNo){ pgNo = np; lcdDraw(false); }
+    }
+    return;
+  }
+  if(!hDn) return;
+  if(++hUp < 2) return;                                           // the finger must be off for two looks: a skipped reading is not a lift
+  hDn = false; hUp = 0;
+  if(!hDrag && now - tpAt > 200){ tpAt = now; tpTaps++; lastTouch = now; tileTap((hX0 < 108 ? 0 : (hX0 < 213 ? 1 : 2)) + (hY0 < 117 ? 0 : 3)); lcdDraw(false); }
 }
 void tpLoop(){
   if(!tpOk || !lcdOn) return;
@@ -6837,6 +6871,9 @@ void tpLoop(){
   int x = 0, y = 0; bool down = board == 3 ? tpRead3(x, y) : tpRead(x, y);
   if(board == 3){ static int n3 = 0; if(down){ if(++n3 < 2) down = false; } else n3 = 0; }      // a pressed screen must hold for two looks: no ghost taps
   if(webOn && !kbOn && !asleep && !camOn){ webTp(down, x, y, now); tpDown = down; return; }      // a web page: tap, or drag to scroll
+  { bool home = !kbOn && !wfOn && !callOn && !gameOn && !jetOn && !phOn && !pcOn && !camOn && !asleep;
+    if(!home) hDn = false;
+    else if(hDn || (down && !tpDown && y >= 31 && y < 203)){ homeTp(down, x, y, now); tpDown = down || hDn; return; } }
   if(down && !tpDown && now - tpAt > (kbOn ? 140UL : gameOn ? 160UL : 280UL)){
     tpAt = now; tpTaps++;
     if(asleep){ lcdSleep(false); tpDown = true; return; }         // the first touch only wakes the screen
@@ -6996,7 +7033,7 @@ String page(const String& note){
   for(int i = 0; i < NREL; i++) if(pins[i] >= 0) h += "<form method=post action=/t><input type=hidden name=n value=" + String(i + 1) + "><button class=b2>Switch " + String(i + 1) + " is " + (on[i] ? "ON" : "OFF") + " - tap to flip</button></form>";
   if(bzPin >= 0) h += "<form method=post action=/t><input type=hidden name=n value=9><button class=b2>Beep the buzzer</button></form>";
   if(board == 3) h += "<br><small>Touch check: strength " + String(tpZ) + ", last press at " + String(tpLX) + "," + String(tpLY) + ", silent " + String(tpStuck) + ". <a href=/touch>Open the live touch test</a></small>";
-  h += "</div><small>Mary&#39;s Magic Box 5.9 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
+  h += "</div><small>Mary&#39;s Magic Box 6.0 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
 void handleRoot(){ web.send(200, "text/html", page("")); }
@@ -7060,7 +7097,7 @@ void handleOther(){                                             // any other add
 void setup(){
   Serial.begin(115200);
   delay(300);
-  Serial.println(); Serial.println("Mary's Magic Box 5.9 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
+  Serial.println(); Serial.println("Mary's Magic Box 6.0 - Wi-Fi switch box for Mary AI (buzzer + screen + touch)");
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", "");
@@ -7684,6 +7721,7 @@ static const char* const RADIO_NAME[NRADIO] = {"CHRISTMAS GOSPEL", "CHRISTMAS CL
 static const char* const RADIO_URL[NRADIO] = {"http://listen.181fm.com/181-xgospel_128k.mp3", "http://listen.181fm.com/181-xtraditional_128k.mp3", "http://emf.streamguys1.com/sk001_mp3_low_web", "http://listen.181fm.com/181-xblender_128k.mp3"};
 String songName(int k){
   if(k < 0) return String("MUSIC ON");
+  if(k >= sdSongN + NRADIO) return String("PHONE BLUETOOTH");
   if(k >= sdSongN) return String(RADIO_NAME[(k - sdSongN) % NRADIO]);
   String n = sdSong[k]; int a = n.lastIndexOf('/'); if(a >= 0) n = n.substring(a + 1);
   int d = n.lastIndexOf('.'); if(d > 0) n = n.substring(0, d);
@@ -7722,6 +7760,56 @@ void maryLoad(){                                                  // mary.jpg on
   free(px);
 }
 #if HAS_SD
+uint8_t* nfBuf = NULL;
+class NetFifo : public AudioFileSource {                           // the radio comes in ahead of time into a big store (about 15 seconds), so a slow moment on the Wi-Fi does not cut the song
+ public:
+  WiFiClient cli; HTTPClient http; WiFiClient* st = NULL;
+  uint32_t h = 0, t = 0, pos = 0, prime = 24000, lastRx = 0; bool primed = false, opened = false;
+  NetFifo(const char* url, uint32_t pr){
+    prime = pr; if(!nfBuf) return;
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS); http.setConnectTimeout(6000); http.setTimeout(6000); http.setReuse(false);
+    if(!http.begin(cli, url)) return;
+    int c = http.GET(); if(c != 200){ http.end(); return; }
+    st = http.getStreamPtr(); opened = st != NULL; lastRx = millis();
+  }
+  virtual ~NetFifo(){ if(opened) http.end(); opened = false; st = NULL; }
+  void pump(){                                                     // take in whatever has arrived
+    if(!st) return;
+    for(int k = 0; k < 16; k++){
+      int a = st->available(); if(a <= 0) break;
+      uint32_t fr = NF_N - (h - t); if(fr == 0) break;
+      uint32_t off = h & (NF_N - 1), n = (uint32_t)a; if(n > fr) n = fr; if(n > NF_N - off) n = NF_N - off; if(n > 4096) n = 4096;
+      int r = st->read(nfBuf + off, n); if(r <= 0) break;
+      h += (uint32_t)r; lastRx = millis();
+    }
+  }
+  virtual uint32_t read(void* data, uint32_t len){
+    uint8_t* d = (uint8_t*)data; uint32_t got = 0, t0 = millis();
+    for(;;){
+      pump();
+      uint32_t have = h - t;
+      if(!primed && (have >= prime || (have > 0 && millis() - t0 > 6000))) primed = true;
+      if(primed && have){
+        uint32_t off = t & (NF_N - 1), n = len - got; if(n > have) n = have; if(n > NF_N - off) n = NF_N - off;
+        memcpy(d + got, nfBuf + off, n); t += n; got += n; pos += n;
+        if(got >= len) return got;
+        continue;
+      }
+      if(got) return got;
+      if(primed && !have){ primed = false; t0 = millis(); }          // ran dry: fill up a little before going on
+      if(!st || (!st->connected() && st->available() <= 0)) return 0;      // the station hung up
+      if(millis() - lastRx > 9000) return 0;                       // nothing came for a long time
+      if(!(musicOn || webOn) || sdWant >= 0) return 0;             // stopped, or another station picked
+      vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+  }
+  virtual uint32_t readNonBlock(void* data, uint32_t len){ return read(data, len); }
+  virtual bool seek(int32_t p, int dir){ return false; }
+  virtual bool close(){ if(opened) http.end(); opened = false; st = NULL; return true; }
+  virtual bool isOpen(){ return opened; }
+  virtual uint32_t getSize(){ return 0; }
+  virtual uint32_t getPos(){ return pos; }
+};
 class MuOut : public AudioOutput {                                 // the song decoder hands its sound to the box's speaker, made into 16000 a second
  public:
   uint32_t ph = 0; int32_t acc = 0; int cnt = 0;
@@ -7740,28 +7828,45 @@ class MuOut : public AudioOutput {                                 // the song d
     return true;
   }
 };
-MuOut* muOut = NULL; AudioGeneratorMP3* mp3 = NULL; AudioFileSourceFS* mpSrc = NULL; AudioFileSourceHTTPStream* mpNet = NULL; AudioFileSourceBuffer* mpBuf = NULL;
+MuOut* muOut = NULL; AudioGeneratorMP3* mp3 = NULL; AudioFileSourceFS* mpSrc = NULL; NetFifo* mpNet = NULL; AudioFileSourceBuffer* mpBuf = NULL;
 void mpStop(){ if(mp3){ mp3->stop(); delete mp3; mp3 = NULL; } if(mpBuf){ delete mpBuf; mpBuf = NULL; } if(mpNet){ delete mpNet; mpNet = NULL; } if(mpSrc){ delete mpSrc; mpSrc = NULL; } }
 void sdTask(void* arg){                                           // plays the music by itself: SD card songs one after another, or a radio station
   int fails = 0;
   for(;;){
     muReal = realMusic();
-    if(!(musicOn && muReal)){ if(mp3) mpStop(); vTaskDelay(50 / portTICK_PERIOD_MS); continue; }
+    bool ws = webOn && muBuf && WiFi.status() == WL_CONNECTED;      // a web page is open: its sound comes from the Jetson
+    static bool wasWs = false; if(ws != wasWs){ wasWs = ws; mpStop(); muT = muH; fails = 0; }
+    muPlay = ws || (musicOn && muReal);
+    if(!muPlay){ if(mp3) mpStop(); vTaskDelay(50 / portTICK_PERIOD_MS); continue; }
     int tot = sdSongN + NRADIO;
-    if(sdWant >= 0){ sdCur = sdWant % tot; sdWant = -1; mpStop(); muT = muH; fails = 0; }
-    if(sdCur >= tot) sdCur = 0;
+    if(sdWant >= 0){ sdCur = sdWant % (tot + 1); sdWant = -1; mpStop(); muT = muH; fails = 0; }
+    if(sdCur > tot) sdCur = 0;
+    bool bt = sdCur == tot;                                       // the phone by Bluetooth, through the Jetson
     if(!mp3){
       bool ok = false;
       mp3 = new AudioGeneratorMP3();
-      if(sdCur < sdSongN){ mpSrc = new AudioFileSourceFS(SD_MMC, sdSong[sdCur].c_str()); ok = mp3->begin(mpSrc, muOut); }
+      if(ws){
+        String u = String("http://") + ((uint32_t)webIp ? webIp : WiFi.gatewayIP()).toString() + ":8091/web.mp3";
+        mpNet = new NetFifo(u.c_str(), 3000);
+        if(mpNet->isOpen()) ok = mp3->begin(mpNet, muOut);
+        if(!ok){ mpStop(); vTaskDelay(3000 / portTICK_PERIOD_MS); continue; }      // no sound from the Jetson yet: try again in a moment
+      }
+      else if(bt){
+        String u = String("http://") + WiFi.gatewayIP().toString() + ":8091/bt.mp3";
+        mpNet = new NetFifo(u.c_str(), 3000);
+        if(mpNet->isOpen()) ok = mp3->begin(mpNet, muOut);
+        if(!ok){ mpStop(); vTaskDelay(3000 / portTICK_PERIOD_MS); continue; }      // the Jetson is not answering yet: try again in a moment
+      }
+      else if(sdCur < sdSongN){ mpSrc = new AudioFileSourceFS(SD_MMC, sdSong[sdCur].c_str()); ok = mp3->begin(mpSrc, muOut); }
       else if(WiFi.status() == WL_CONNECTED){
-        mpNet = new AudioFileSourceHTTPStream(RADIO_URL[(sdCur - sdSongN) % NRADIO]);
-        if(mpNet->isOpen()){ mpBuf = new AudioFileSourceBuffer(mpNet, 16384); ok = mp3->begin(mpBuf, muOut); }
+        mpNet = new NetFifo(RADIO_URL[(sdCur - sdSongN) % NRADIO], 32000);
+        if(mpNet->isOpen()) ok = mp3->begin(mpNet, muOut);
       }
       if(!ok){ mpStop(); if(++fails >= 2){ sdCur = (sdCur + 1) % tot; fails = 0; } vTaskDelay(1500 / portTICK_PERIOD_MS); continue; }      // no luck twice: the next one
     }
+    if(mpNet) mpNet->pump();
     if(!mp3->isRunning() || !mp3->loop()){
-      bool wasSd = sdCur < sdSongN; mpStop();
+      bool wasSd = !ws && !bt && sdCur < sdSongN; mpStop();
       if(wasSd) sdCur = (sdCur + 1) % tot; else vTaskDelay(1000 / portTICK_PERIOD_MS);      // a song ended: the next one.  The radio dropped: join it again
     } else fails = 0;
     vTaskDelay(1);
@@ -7781,7 +7886,7 @@ void sdStart(){
     else if(gKey.length()) sdKeySave(gKey);
   } else Serial.println("No SD card.");
   if(psramFound()){
-    muBuf = (int16_t*)ps_malloc(MU_N * 2);
+    muBuf = (int16_t*)ps_malloc(MU_N * 2); nfBuf = (uint8_t*)ps_malloc(NF_N);
     if(muBuf){ muOut = new MuOut(); xTaskCreatePinnedToCore(sdTask, "music", 16384, NULL, 1, NULL, 0); }
   }
 #endif
