@@ -6,7 +6,7 @@
 # Start once with:  python3 mary_web.py --install   (it then starts by itself every time the Jetson starts)
 # (c) Moto Takeda 316-304-5398
 
-import base64, json, os, random, shutil, socket, struct, subprocess, sys, threading, time, urllib.parse, urllib.request
+import base64, json, zlib, os, random, shutil, socket, struct, subprocess, sys, threading, time, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8091          # the box asks here
@@ -23,6 +23,43 @@ def log(*a):
     try:
         with open(LOG, "a") as f: f.write(line + "\n")
     except Exception: pass
+
+OUT_W, OUT_H = 320, 216      # exactly what the box's screen shows under its buttons
+
+def png_to_565(data, W, H):
+    """PNG picture -> plain screen pixels (RGB565, big end first), cut or padded to W x H. Python only, no extras."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n": raise IOError("not a PNG")
+    pos, idat, w, h, ctype, depth = 8, [], 0, 0, 0, 0
+    while pos < len(data):
+        n = struct.unpack("!I", data[pos:pos + 4])[0]; kind = data[pos + 4:pos + 8]; body = data[pos + 8:pos + 8 + n]; pos += 12 + n
+        if kind == b"IHDR": w, h, depth, ctype = struct.unpack("!IIBB", body[:10])
+        elif kind == b"IDAT": idat.append(body)
+        elif kind == b"IEND": break
+    if depth != 8 or ctype not in (2, 6): raise IOError("PNG kind %d/%d" % (ctype, depth))
+    bpp = 3 if ctype == 2 else 4
+    raw = zlib.decompress(b"".join(idat)); stride = w * bpp
+    out = bytearray(W * H * 2)          # black where the page is smaller
+    prev = bytearray(stride); p = 0
+    for y in range(h):
+        ft = raw[p]; cur = bytearray(raw[p + 1:p + 1 + stride]); p += 1 + stride
+        if ft == 1:
+            for i in range(bpp, stride): cur[i] = (cur[i] + cur[i - bpp]) & 255
+        elif ft == 2:
+            for i in range(stride): cur[i] = (cur[i] + prev[i]) & 255
+        elif ft == 3:
+            for i in range(stride): cur[i] = (cur[i] + (((cur[i - bpp] if i >= bpp else 0) + prev[i]) >> 1)) & 255
+        elif ft == 4:
+            for i in range(stride):
+                a = cur[i - bpp] if i >= bpp else 0; b = prev[i]; c = prev[i - bpp] if i >= bpp else 0
+                pa = abs(b - c); pb = abs(a - c); pc = abs(a + b - 2 * c)
+                cur[i] = (cur[i] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))) & 255
+        prev = cur
+        if y < H:
+            o = y * W * 2
+            for x in range(min(w, W)):
+                i = x * bpp; v = ((cur[i] & 0xF8) << 8) | ((cur[i + 1] & 0xFC) << 3) | (cur[i + 2] >> 3)
+                out[o] = v >> 8; out[o + 1] = v & 255; o += 2
+    return bytes(out)
 
 def find_chromium():
     for n in ("chromium-browser", "chromium", "google-chrome", "google-chrome-stable"):
@@ -148,8 +185,8 @@ class Browser:
         self.proc = None
 
     def shot(self):
-        r = self.cmd("Page.captureScreenshot", format="jpeg", quality=70)
-        return base64.b64decode(r["data"])
+        r = self.cmd("Page.captureScreenshot", format="png")
+        return png_to_565(base64.b64decode(r["data"]), OUT_W, OUT_H)
 
     def do(self, what, q):
         with self.lock:
@@ -169,9 +206,9 @@ class Browser:
                             self.cmd("Input.dispatchMouseEvent", type=t, x=x, y=y, button="left", clickCount=1)
                         wait = 1.5
                     elif what == "scroll":
-                        d = int((q.get("d") or ["1"])[0])
-                        self.cmd("Input.dispatchMouseEvent", type="mouseWheel", x=VIEW_W / 2, y=VIEW_H / 2, deltaX=0, deltaY=180 * d)
-                        wait = 0.5
+                        d = int((q.get("d") or ["1"])[0]); px = int(VIEW_H * 0.8) * d
+                        self.cmd("Runtime.evaluate", expression="(function(){var e=document.scrollingElement||document.documentElement||document.body;var b=e.scrollTop;window.scrollBy(0,%d);if(e.scrollTop==b){var all=document.querySelectorAll('*');for(var i=0;i<all.length;i++){var s=all[i];if(s.scrollHeight>s.clientHeight+20){var st=getComputedStyle(s).overflowY;if(st=='auto'||st=='scroll'){s.scrollTop+=%d;}}}}})()" % (px, px))
+                        wait = 0.6
                     elif what == "type":
                         t = (q.get("t") or [""])[0]
                         if t: self.cmd("Input.insertText", text=t)
@@ -202,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
         if not img:
             self.send_response(503); self.send_header("Content-Length", "0"); self.end_headers(); return
         self.send_response(200)
-        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(img)))
         self.send_header("Connection", "close")
         self.end_headers()
