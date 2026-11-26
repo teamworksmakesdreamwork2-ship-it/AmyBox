@@ -1,4 +1,7 @@
-// AMYRELAY_VERSION 7.4   (the build names the files with this number)
+// AMYRELAY_VERSION 7.5   (the build names the files with this number)
+// 7.5: four orders only - LIGHTS ON, LIGHTS OFF, MUSIC ON, MUSIC OFF.  The MUSIC UP teaching had gone bad and was
+//      grabbing "lights on"; it is gone now, and so is the part that quietly added new teachings by itself, which is
+//      what let it go bad.  Nothing has to be taught again: the four that are left keep what they already know.
 // 7.4: my mistake in 7.3 put the music ahead of everything, so on weak Wi-Fi the radio kept trying over and over and
 //      choked the box - taps and voice went dead and it made a horrible noise.  Now the listening works on one half of
 //      the chip and the music on the other, so neither can choke the other, and a radio that cannot hold on gives up
@@ -184,7 +187,7 @@ uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bo
 #define VC_NC 13                                                   // numbers per piece
 #define VC_FFT 512
 #define VC_MEL 22
-#define VC_ORD 9                                                   // how many different orders it can learn
+#define VC_ORD 4                                                   // only the four that matter: fewer orders means far less mixing them up
 #define VC_SL 6                                                    // how many times each order can be taught (two people, three tries each)
 #define VC_FMT 2                                                   // 7.2 listens in a new way, so teachings from 7.1 are not used
 #define VC_K 2.5f
@@ -197,8 +200,8 @@ struct VTpl { uint8_t n; int8_t f[VC_NF][VC_NC]; };
 VTpl* vt = NULL; VRow* vcNow = NULL; float *vcRe = NULL, *vcIm = NULL, *vcFt = NULL, *vcMe = NULL, *vcEn = NULL;
 bool vcOk = false, fsOk = false, teachOn = false, vcFit = false; volatile bool micHot = false, weakWifi = false; volatile int teachIdx = -1; int teachPg = 0; String cmdMsg = ""; int vcGot = 0;
 volatile bool listenOn = false; unsigned long listenAt = 0;        // VOICE stays on until he taps it again (or 90 seconds with nothing said)
-static const char* const VC_NAME[VC_ORD] = {"LIGHTS ON", "LIGHTS OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAMERA ON", "CAMERA OFF"};
-static const char* const VC_CMD[VC_ORD] = {"LIGHT ON", "LIGHT OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAM ON", "CAM OFF"};
+static const char* const VC_NAME[VC_ORD] = {"LIGHTS ON", "LIGHTS OFF", "MUSIC ON", "MUSIC OFF"};
+static const char* const VC_CMD[VC_ORD] = {"LIGHT ON", "LIGHT OFF", "MUSIC ON", "MUSIC OFF"};
 volatile bool cmdMode = false; volatile int cmdWhy = 0;                                    // 6.8: the VOICE button: one short spoken order, no talking back, so it is quick
 bool prayOn = false; uint32_t prayHz = 0;                        // 6.7: the PRAYER page, and the signal it puts out (in hertz)
 bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = false; char callTxt[208]; uint16_t callSeen[6]; int callSeenK = 0; unsigned long pcAt = 0; WiFiUDP callUdpTxt;
@@ -470,7 +473,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.4"
+#define BOX_VER "7.5"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6969,7 +6972,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.4. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 7.5. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7584,13 +7587,6 @@ bool vcMatch(){                                                    // VOICE: the
   if(o < 0){                                                       // not sure: say what it nearly heard and how far off it was, so he can just say it again
     cmdMsg = (almost >= 0 && shown < 900 ? String(VC_NAME[almost]) + "? " : String("NOT SURE ")) + "(" + String(shown) + ")";
     return false;
-  }
-  if(vcFit){                                                      // it was plainly this one: keep it as one more teaching, so his voice is known better tomorrow
-    for(int sl = 0; sl < VC_SL; sl++) if(!vt[o * VC_SL + sl].n){
-      int m = vcFeat(recLoud() + 3200, recN - 3200, vcNow);
-      if(m >= 8){ vt[o * VC_SL + sl].n = (uint8_t)m; memcpy(vt[o * VC_SL + sl].f, vcNow, (size_t)m * VC_NC); vcSave(o * VC_SL + sl); vcCount(); }
-      break;
-    }
   }
   aiCmd = VC_CMD[o]; cmdWhy = 0; cmdMsg = ""; return true;
 }
