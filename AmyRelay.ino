@@ -1,4 +1,8 @@
-// AMYRELAY_VERSION 7.3   (the build names the files with this number)
+// AMYRELAY_VERSION 7.4   (the build names the files with this number)
+// 7.4: my mistake in 7.3 put the music ahead of everything, so on weak Wi-Fi the radio kept trying over and over and
+//      choked the box - taps and voice went dead and it made a horrible noise.  Now the listening works on one half of
+//      the chip and the music on the other, so neither can choke the other, and a radio that cannot hold on gives up
+//      and says WI-FI TOO WEAK instead of grinding away.  The voice orders never needed the Wi-Fi and still do not.
 // 7.3: the music no longer goes quiet while VOICE is listening (the music now gets the machine before the listening does),
 //      and the box ducks the music the moment you start talking, so it hears you and not itself.  An order a little further
 //      from how you taught it is taken now, as long as it is plainly that one and not another.  Every order the box is sure
@@ -191,7 +195,7 @@ uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bo
 typedef int8_t VRow[VC_NC];
 struct VTpl { uint8_t n; int8_t f[VC_NF][VC_NC]; };
 VTpl* vt = NULL; VRow* vcNow = NULL; float *vcRe = NULL, *vcIm = NULL, *vcFt = NULL, *vcMe = NULL, *vcEn = NULL;
-bool vcOk = false, fsOk = false, teachOn = false, vcFit = false; volatile bool micHot = false; volatile int teachIdx = -1; int teachPg = 0; String cmdMsg = ""; int vcGot = 0;
+bool vcOk = false, fsOk = false, teachOn = false, vcFit = false; volatile bool micHot = false, weakWifi = false; volatile int teachIdx = -1; int teachPg = 0; String cmdMsg = ""; int vcGot = 0;
 volatile bool listenOn = false; unsigned long listenAt = 0;        // VOICE stays on until he taps it again (or 90 seconds with nothing said)
 static const char* const VC_NAME[VC_ORD] = {"LIGHTS ON", "LIGHTS OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAMERA ON", "CAMERA OFF"};
 static const char* const VC_CMD[VC_ORD] = {"LIGHT ON", "LIGHT OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAM ON", "CAM OFF"};
@@ -466,7 +470,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.3"
+#define BOX_VER "7.4"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6855,7 +6859,7 @@ void tileTap(int slot){                                            // a finger o
   if(id == 22){                                                    // CAMERA: the picture from the other box (Drain Watch) on the same Wi-Fi
     if(!drainIp.length()){ showMsg("NO CAMERA BOX FOUND"); return; }
     camOn = true; camAt = 0; camOpened = millis(); return; }
-  if(id == 4){ musicOn = !musicOn; sayClip(musicOn ? 7 : 8); showMsg(musicOn ? (realMusic() ? songName(sdCur) : String("MUSIC ON")) : String("MUSIC OFF")); return; }
+  if(id == 4){ musicOn = !musicOn; weakWifi = false; sayClip(musicOn ? 7 : 8); showMsg(musicOn ? (realMusic() ? songName(sdCur) : String("MUSIC ON")) : String("MUSIC OFF")); return; }
   if(id == 18){                                                    // the phone's music by Bluetooth: the phone plays to the Jetson, the Jetson hands it to this box
     if(musicOn && btSel()){ musicOn = false; sdWant = 0; sayClip(8); showMsg("PHONE MUSIC OFF"); return; }
     if(!muBuf || WiFi.status() != WL_CONNECTED){ showMsg("NEEDS WI-FI + JETSON"); return; }
@@ -6965,7 +6969,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.3. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 7.4. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7241,7 +7245,7 @@ void setup(){
   gKey = prefs.getString("gk", ""); gKey.trim(); gTalk = prefs.getString("gm", gTalk); gVoice = prefs.getString("gv", gVoice);
   if(psramFound()){ recL = (int16_t*)ps_malloc(16000 * 8 * 2); recR = (int16_t*)ps_malloc(16000 * 8 * 2); vBuf = (int16_t*)ps_malloc(16000 * 40 * 2); }
   if(!recL || !recR || !vBuf) gKey = "";                         // no big memory on this board: Mary does not talk here
-  else xTaskCreatePinnedToCore(aiTask, "mary", 16384, NULL, 1, NULL, 0);
+  else xTaskCreatePinnedToCore(aiTask, "mary", 16384, NULL, 1, NULL, 1);      // 7.4: the listening has the other half of the chip, away from the music
   hubHost = prefs.getString("jh", "moto-desktop.local"); hubHost.trim(); lpw = prefs.getString("lp", "04170417");
   volSet = prefs.getInt("vo", 2); if(volSet < 1 || volSet > 3) volSet = 2;
   spkPin = prefs.getInt("sd", 0); if(spkPin != 6 && spkPin != 8) spkPin = 0;
@@ -7523,7 +7527,7 @@ static float vcBest(const VTpl* t){                                // the closes
 static int vcPick(const int16_t* x, int n, int* shown, int* almost){
   float per[VC_ORD]; float d1 = 1e9f, d2 = 1e9f; int b = -1;
   vcGuess(x, n);
-  for(int o = 0; o < VC_ORD; o++){ per[o] = vcBest(&vt[o * VC_SL]); if(per[o] < d1){ d1 = per[o]; b = o; } delay(1); }      // a breath between orders, so the music keeps flowing
+  for(int o = 0; o < VC_ORD; o++){ per[o] = vcBest(&vt[o * VC_SL]); if(per[o] < d1){ d1 = per[o]; b = o; } delay(1); }      // a breath between orders, so the screen stays awake
   if(shown) *shown = d1 > 998.0f ? 999 : (int)(d1 + 0.5f);
   if(almost) *almost = b;                                          // which order it nearly was, so the screen can say so
   if(b < 0 || d1 > 998.0f) return -1;
@@ -7629,7 +7633,7 @@ bool cmdLocal(){                                                  // 6.9: VOICE 
   uint32_t cand[3]; int nc = jetList(cand);
   for(int k = 0; k < nc; k++){
     IPAddress ip(cand[k]);
-    WiFiClient c; HTTPClient h; h.setConnectTimeout(1500); h.setTimeout(7000); h.setReuse(false);
+    WiFiClient c; HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(4000); h.setReuse(false);
     if(!h.begin(c, String("http://") + ip.toString() + ":8091/stt")) continue;
     h.addHeader("Content-Type", "application/octet-stream");
     int code = h.POST((uint8_t*)use, (size_t)recN * 2);
@@ -7735,7 +7739,7 @@ void aiTask(void* arg){
 // ---- the drain pan (Moto Drain Watch board on the same Wi-Fi)
 bool camShow(){                                                   // the drain camera picture, full screen
   if(!lcdOn || !drainIp.length() || WiFi.status() != WL_CONNECTED) return false;
-  WiFiClient c; HTTPClient h; h.setConnectTimeout(2000); h.setTimeout(6000);
+  WiFiClient c; HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(3000);      // 7.4: the camera picture waits a short time only, so the screen stays alive
   if(!h.begin(c, "http://" + drainIp + "/pic.jpg")) return false;
   bool good = false;
   if(h.GET() == 200){
@@ -7982,7 +7986,7 @@ int webFetch(const String& path){                               // 1 = drew it, 
   uint32_t hj = (uint32_t)hubIp; if(hj && hj != (uint32_t)webIp && hj != g) cand[nc++] = hj;
   for(int k = 0; k < nc; k++){
     IPAddress ip(cand[k]);
-    WiFiClient c; HTTPClient h; h.setConnectTimeout(1500); h.setTimeout(15000);
+    WiFiClient c; HTTPClient h; h.setConnectTimeout(1500); h.setTimeout(5000);      // 7.4: never hold the screen still for long - weak Wi-Fi used to make taps feel dead
     String u = String("http://") + ip.toString() + ":8091" + path;
     if(webFull) u += (path.indexOf('?') >= 0 ? "&f=1" : "?f=1");
     if(!h.begin(c, u)) continue;
@@ -8256,15 +8260,15 @@ MuOut* muOut = NULL; AudioGeneratorMP3* mp3 = NULL; AudioFileSourceFS* mpSrc = N
 bool mpBegun = false;                                             // 6.4: stopping a player that never started crashed the box (WEB with no sound from the Jetson)
 void mpStop(){ if(mp3){ if(mpBegun) mp3->stop(); mpBegun = false; delete mp3; mp3 = NULL; } if(mpBuf){ delete mpBuf; mpBuf = NULL; } if(mpNet){ delete mpNet; mpNet = NULL; } if(mpSrc){ delete mpSrc; mpSrc = NULL; } }
 void sdTask(void* arg){                                           // plays the music by itself: SD card songs one after another, or a radio station
-  int fails = 0;
+  int fails = 0, drops = 0; uint32_t began = 0;
   for(;;){
     muReal = realMusic();
     bool ws = webOn && muBuf && WiFi.status() == WL_CONNECTED;      // a web page is open: its sound comes from the Jetson
-    static bool wasWs = false; if(ws != wasWs){ wasWs = ws; mpStop(); muT = muH; fails = 0; }
+    static bool wasWs = false; if(ws != wasWs){ wasWs = ws; mpStop(); muT = muH; fails = 0; drops = 0; }
     muPlay = ws || (musicOn && muReal);
     if(!muPlay){ if(mp3) mpStop(); vTaskDelay(50 / portTICK_PERIOD_MS); continue; }
     int tot = sdSongN + NRADIO;
-    if(sdWant >= 0){ sdCur = sdWant % (tot + 1); sdWant = -1; mpStop(); muT = muH; fails = 0; }
+    if(sdWant >= 0){ sdCur = sdWant % (tot + 1); sdWant = -1; mpStop(); muT = muH; fails = 0; drops = 0; }
     if(sdCur > tot) sdCur = 0;
     bool bt = sdCur == tot;                                       // the phone by Bluetooth, through the Jetson
     if(!mp3){
@@ -8286,13 +8290,20 @@ void sdTask(void* arg){                                           // plays the m
         mpNet = new NetFifo(RADIO_URL[(sdCur - sdSongN) % NRADIO], 32000);
         if(mpNet->isOpen()) { mp3 = new AudioGeneratorMP3(); mpBegun = true; ok = mp3->begin(mpNet, muOut); }
       }
-      if(!ok){ mpStop(); if(++fails >= 2){ sdCur = (sdCur + 1) % tot; fails = 0; } vTaskDelay(1500 / portTICK_PERIOD_MS); continue; }      // no luck twice: the next one
+      if(!ok){ mpStop(); muT = muH;
+        if(++fails >= 2){ sdCur = (sdCur + 1) % tot; fails = 0; drops++; }
+        if(drops >= 3){ musicOn = false; drops = 0; muT = muH; weakWifi = true; lcdShown = ""; vTaskDelay(500 / portTICK_PERIOD_MS); continue; }      // it cannot hold a station: stop, and say so, instead of grinding away
+        vTaskDelay(1500 / portTICK_PERIOD_MS); continue; }
+      began = millis();
     }
     if(mpNet) mpNet->pump();
     if(!mp3->isRunning() || !mp3->loop()){
-      bool wasSd = !ws && !bt && sdCur < sdSongN; mpStop();
-      if(wasSd) sdCur = (sdCur + 1) % tot; else vTaskDelay(1000 / portTICK_PERIOD_MS);      // a song ended: the next one.  The radio dropped: join it again
-    } else fails = 0;
+      bool wasSd = !ws && !bt && sdCur < sdSongN; bool quick = millis() - began < 8000;
+      mpStop(); muT = muH;                                        // nothing half-played left over, so there is no horrible noise
+      if(wasSd){ sdCur = (sdCur + 1) % tot; drops = 0; }
+      else if(quick && ++drops >= 3){ musicOn = false; drops = 0; weakWifi = true; lcdShown = ""; }      // it keeps falling over within seconds: the Wi-Fi is too weak for the radio
+      else vTaskDelay(1000 / portTICK_PERIOD_MS);                 // the radio dropped: join it again
+    } else { fails = 0; if(millis() - began > 8000) drops = 0; }
     vTaskDelay(1);
   }
 }
@@ -8311,8 +8322,7 @@ void sdStart(){
   } else Serial.println("No SD card.");
   if(psramFound()){
     muBuf = (int16_t*)ps_malloc(MU_N * 2); nfBuf = (uint8_t*)ps_malloc(NF_N);
-    // 7.3: the music sits above the listening, so it never stutters or stops while VOICE is on
-    if(muBuf){ muOut = new MuOut(); xTaskCreatePinnedToCore(sdTask, "music", 16384, NULL, 2, NULL, 0); }
+    if(muBuf){ muOut = new MuOut(); xTaskCreatePinnedToCore(sdTask, "music", 16384, NULL, 1, NULL, 0); }      // the music has one half of the chip to itself
   }
 #endif
 }
