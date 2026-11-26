@@ -1,4 +1,6 @@
-// AMYRELAY_VERSION 8.0   (the build names the files with this number)
+// AMYRELAY_VERSION 8.1   (the build names the files with this number)
+// 8.1: 7.7, 7.9 and 8.0 never built.  Two small mistakes of mine stopped the compiler, and the build page showed
+//      green anyway, so nothing told either of us.  Both are fixed here, and the yellow board builds again too.
 // 8.0: the box can now hand over the very sound it heard.  On the SHOW CLAUDE page there is a button that saves
 //      the last thing said to it as a sound file.  Send that file to Claude and he can listen to the real voice in
 //      the real room, instead of guessing from made-up voices.  That is how the hearing gets fixed for good.
@@ -98,9 +100,10 @@
 #define CYD 0
 #endif
 #include <esp_now.h>
+#include <FS.h>
+#include <LittleFS.h>      // 8.1: both boards, not just the black one - the yellow build has been failing on this since 7.1
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #include <SD_MMC.h>
-#include <LittleFS.h>
 #include <AudioFileSourceFS.h>
 #include <AudioGeneratorMP3.h>
 #include <AudioFileSourceHTTPStream.h>
@@ -504,7 +507,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "8.0"
+#define BOX_VER "8.1"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -7064,7 +7067,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 8.0. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 8.1. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -8249,7 +8252,7 @@ void sdKeySave(const String& k){
 #endif
 }
 // ---- real music: internet radio stations and MP3 songs from the SD card (black box: SD card slot on pins 38 40 39)
-static const char* const RADIO_NAME[NRADIO] = {
+const char* const RADIO_NAME[NRADIO] = {      // 8.1: not "static" - it is promised further up the file, and the two did not agree
   "CHRISTIAN RADIO", "AIR1 WORSHIP", "PRAISE AND WORSHIP", "CHRISTMAS GOSPEL",
   "CHRISTMAS CLASSICS", "CHRISTMAS HITS", "CHRISTMAS MIX", "CHRISTMAS SPIRIT",
   "CLASSICAL MUSIC", "CLASSICAL GUITAR", "MELLOW GOLD", "THE BREEZE",
@@ -8257,7 +8260,7 @@ static const char* const RADIO_NAME[NRADIO] = {
   "GOOD TIME OLDIES", "THE EAGLE CLASSIC", "YACHT ROCK", "STAR 90s",
   "LITE 80s", "THE MIX", "POWER 181 TOP 40", "UK TOP 40",
   "REAL COUNTRY", "FRONT PORCH"};
-static const char* const RADIO_URL[NRADIO] = {
+const char* const RADIO_URL[NRADIO] = {
   "http://emf.streamguys1.com/sk001_mp3_low_web",                 // K-LOVE: has always played on this box
   "http://emf.streamguys1.com/air1_mp3_low_web",
   "http://listen.181fm.com/181-praise_128k.mp3",
