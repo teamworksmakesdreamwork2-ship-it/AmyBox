@@ -1,4 +1,7 @@
-// AMYRELAY_VERSION 7.9   (the build names the files with this number)
+// AMYRELAY_VERSION 8.0   (the build names the files with this number)
+// 8.0: the box can now hand over the very sound it heard.  On the SHOW CLAUDE page there is a button that saves
+//      the last thing said to it as a sound file.  Send that file to Claude and he can listen to the real voice in
+//      the real room, instead of guessing from made-up voices.  That is how the hearing gets fixed for good.
 // 7.9: 26 radio stations - Christian, uplifting, classical, pop, oldies, country.  The box finds out for itself which
 //      ones answer, skips the ones that do not, and tries them again every ten minutes.  The SHOW CLAUDE page lists
 //      every station with OK or DEAD beside it, so the dead links can be taken out for good.
@@ -253,6 +256,8 @@ String songName(int k);
 int nextLive(int cur, int tot);
 bool rDead(int k);
 extern const char* const RADIO_NAME[];
+extern int16_t* wavBuf;
+extern volatile int wavN;
 void vcForget(int o);
 void vcCount();
 void sayClip(int k);
@@ -499,7 +504,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.9"
+#define BOX_VER "8.0"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6770,7 +6775,29 @@ void handleReport(){
   h += "function ok2(k){document.getElementById('ok').textContent=k?'COPIED - now paste it to Claude':'Could not copy - hold your finger on the text and copy it';}</script>";
   h += "<pre id=r>" + esc(r) + "</pre>";
   h += "<button onclick='location.reload()' style='background:#2c5ad6'>FRESH LOOK</button>";
+  h += "<a href='/heard.wav' style='display:block;text-align:center;padding:20px;margin-top:10px;font-size:20px;font-weight:700;background:#b4552c;color:#fff;border-radius:12px;text-decoration:none'>SAVE WHAT IT HEARD</a>";
+  h += "<div style='color:#aee5c0;text-align:center;padding:8px'>Say an order first, then tap this. Send the file to Claude and he can hear your real voice.</div>";
   web.send(200, "text/html", h);
+}
+void handleWav(){                                                 // the last thing said to the box, as a sound file Claude can listen to
+  int n = wavN;
+  if(!wavBuf || n < 1600){ web.send(404, "text/plain", "nothing heard yet - tap VOICE, say an order, then come back"); return; }
+  uint32_t dataLen = (uint32_t)n * 2, riff = 36 + dataLen;
+  uint8_t h[44] = {'R','I','F','F',0,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,1,0,1,0,
+                   0x80,0x3E,0,0, 0,0x7D,0,0, 2,0,16,0, 'd','a','t','a',0,0,0,0};
+  h[4] = riff & 255; h[5] = (riff >> 8) & 255; h[6] = (riff >> 16) & 255; h[7] = (riff >> 24) & 255;
+  h[40] = dataLen & 255; h[41] = (dataLen >> 8) & 255; h[42] = (dataLen >> 16) & 255; h[43] = (dataLen >> 24) & 255;
+  web.sendHeader("Content-Disposition", "attachment; filename=\"heard.wav\"");
+  web.setContentLength(44 + dataLen);
+  web.send(200, "audio/wav", "");
+  web.client().write(h, 44);
+  const uint8_t* p = (const uint8_t*)wavBuf;
+  for(uint32_t off = 0; off < dataLen; ){                          // sent in small pieces, so the box does not run out of room
+    uint32_t c = dataLen - off; if(c > 1024) c = 1024;
+    if(web.client().write(p + off, c) != c) break;
+    off += c; delay(1);
+  }
+  web.client().stop();
 }
 void handlePeers(){
   web.sendHeader("Access-Control-Allow-Origin", "*");
@@ -7037,7 +7064,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.9. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 8.0. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7358,7 +7385,8 @@ void setup(){
   web.on("/touch", HTTP_GET, handleTouch);
   web.on("/hub", HTTP_GET, handleHub);
   web.on("/peers", HTTP_GET, handlePeers);
-  web.on("/claude", HTTP_GET, handleReport);      // SHOW CLAUDE: the whole story of the box on one page
+  web.on("/claude", HTTP_GET, handleReport);
+  web.on("/heard.wav", HTTP_GET, handleWav);      // the very sound the box heard      // SHOW CLAUDE: the whole story of the box on one page
   web.onNotFound(handleOther);
   WiFi.onEvent([](WiFiEvent_t e, WiFiEventInfo_t info){ wReason = info.wifi_sta_disconnected.reason; }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);      // remember WHY Wi-Fi failed
   vcBoot();                                                        // 7.1: the box's own memory (Mary's key, the taught orders)
@@ -7645,11 +7673,19 @@ void vcBoot(){                                                     // Mary's key
 }
 void vcCount(){ vcGot = 0; if(!vcOk && !vt) return; for(int o = 0; o < VC_ORD; o++){ int c = 0; for(int sl = 0; sl < VC_SL; sl++) if(vt[o * VC_SL + sl].n) c++; if(c >= 2) vcGot++; } }
 int vcSaid(int o){ int c = 0; if(!vt) return 0; for(int sl = 0; sl < VC_SL; sl++) if(vt[o * VC_SL + sl].n) c++; return c; }
+int16_t* wavBuf = NULL; volatile int wavN = 0;      // kept where Claude can be sent it                    // the last thing said to the box, kept so it can be handed to Claude
+void wavKeep(const int16_t* x, int n){
+  if(!wavBuf){ if(!psramFound()) return; wavBuf = (int16_t*)ps_malloc(16000 * 6 * 2); }
+  if(!wavBuf) return;
+  if(n > 16000 * 6) n = 16000 * 6;
+  memcpy(wavBuf, x, (size_t)n * 2); wavN = n;
+}
 int16_t* recLoud(){ int16_t* use = recL; long eL = 0, eR = 0; for(int i = 0; i < recN; i += 4){ eL += abs(recL[i]); eR += abs(recR[i]); } if(eR > eL) use = recR; return use; }
 bool vcMatch(){                                                    // VOICE: the box's own ears.  true = an order was understood right here
   if(!vcOk || !vcGot || recN < 12000) return false;
   int shown = 999;
   vcFit = false;
+  wavKeep(recLoud() + 3200, recN - 3200);                          // keep what was just said, in case Claude needs to hear it
   int almost = -1;
   int o = vcPick(recLoud() + 3200, recN - 3200, &shown, &almost);  // the first 0.2 second is the tap and its beep: left out
   if(o < 0){                                                       // not sure: say what it nearly heard and how far off it was, so he can just say it again
