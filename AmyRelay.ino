@@ -1,4 +1,13 @@
-// AMYRELAY_VERSION 8.4   (the build names the files with this number)
+// AMYRELAY_VERSION 8.6   (the build names the files with this number)
+// 8.6: THE CAMERA BOARD.  The same program now also runs on the ESP32-S3 CAM board (N16R8, two USB-C plugs, OV2640 /
+//      OV3660 / OV5640 camera).  It finds the camera by itself on the first start - nothing to pick, no screen needed.
+//      Open  http://moto-cam.local  (or the board's number) on a phone, the Jetson or any computer: the live picture.
+//      The black box's CAMERA button (and "camera on") now shows this camera when it is on the same Wi-Fi; with no
+//      camera board around it shows the drain camera as before.  Nothing else on the black box changed.
+// 8.5: ON and OFF cannot be mixed up any more.  "Lights on" and "lights off" sound almost the same, so the box used to
+//      say NOT SURE or pick the wrong one.  Now, once it knows you said LIGHTS (or MUSIC), and it cannot tell on from off,
+//      it looks at the light itself: if the light is on you meant OFF, if it is off you meant ON.
+//      SONG with no Wi-Fi no longer shows the names of the old toy tunes and plays nothing - it says NO WI-FI FOR MUSIC.
 // 8.3: SCROLLING IS SMOOTH.  Dragging a Jetson page used to freeze until the Jetson sent a whole new picture, so the
 //      page jumped instead of moving.  The box now keeps its own copy of the picture and slides THAT under your finger
 //      right away, then asks the Jetson for the real page when you lift off.  No waiting, no jump.
@@ -106,6 +115,9 @@
 #define CYD 0
 #endif
 #include <esp_now.h>
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include "esp_camera.h"                     // 8.6: the camera board
+#endif
 #include <FS.h>
 #include <LittleFS.h>      // 8.1: both boards, not just the black one - the yellow build has been failing on this since 7.1
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -242,6 +254,8 @@ bool webPxOk = false;                             // 8.3: true once a whole page
 String wxText = ""; unsigned long wxAt = 0;
 #define NRADIO 26                                                  // 7.9: plenty of stations; the box works out which ones answer
 static const uint8_t RED_JPG[637] = {255,216,255,224,0,16,74,70,73,70,0,1,1,0,0,1,0,1,0,0,255,219,0,67,0,3,2,2,3,2,2,3,3,3,3,4,3,3,4,5,8,5,5,4,4,5,10,7,7,6,8,12,10,12,12,11,10,11,11,13,14,18,16,13,14,17,14,11,11,16,22,16,17,19,20,21,21,21,12,15,23,24,22,20,24,18,20,21,20,255,219,0,67,1,3,4,4,5,4,5,9,5,5,9,20,13,11,13,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,255,192,0,17,8,0,16,0,16,3,1,17,0,2,17,1,3,17,1,255,196,0,31,0,0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,255,196,0,181,16,0,2,1,3,3,2,4,3,5,5,4,4,0,0,1,125,1,2,3,0,4,17,5,18,33,49,65,6,19,81,97,7,34,113,20,50,129,145,161,8,35,66,177,193,21,82,209,240,36,51,98,114,130,9,10,22,23,24,25,26,37,38,39,40,41,42,52,53,54,55,56,57,58,67,68,69,70,71,72,73,74,83,84,85,86,87,88,89,90,99,100,101,102,103,104,105,106,115,116,117,118,119,120,121,122,131,132,133,134,135,136,137,138,146,147,148,149,150,151,152,153,154,162,163,164,165,166,167,168,169,170,178,179,180,181,182,183,184,185,186,194,195,196,197,198,199,200,201,202,210,211,212,213,214,215,216,217,218,225,226,227,228,229,230,231,232,233,234,241,242,243,244,245,246,247,248,249,250,255,196,0,31,1,0,3,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,255,196,0,181,17,0,2,1,2,4,4,3,4,7,5,4,4,0,1,2,119,0,1,2,3,17,4,5,33,49,6,18,65,81,7,97,113,19,34,50,129,8,20,66,145,161,177,193,9,35,51,82,240,21,98,114,209,10,22,36,52,225,37,241,23,24,25,26,38,39,40,41,42,53,54,55,56,57,58,67,68,69,70,71,72,73,74,83,84,85,86,87,88,89,90,99,100,101,102,103,104,105,106,115,116,117,118,119,120,121,122,130,131,132,133,134,135,136,137,138,146,147,148,149,150,151,152,153,154,162,163,164,165,166,167,168,169,170,178,179,180,181,182,183,184,185,186,194,195,196,197,198,199,200,201,202,210,211,212,213,214,215,216,217,218,226,227,228,229,230,231,232,233,234,242,243,244,245,246,247,248,249,250,255,218,0,12,3,1,0,2,17,3,17,0,63,0,249,210,191,12,63,213,48,160,2,128,10,0,255,217};
+String camIp = ""; unsigned long camIpSeen = 0; bool cam5Ok = false, cam5Big = false, camSrc5 = false; unsigned long cam5Shots = 0;      // 8.6: the camera board (board 5) and where the black box finds it
+void handleCamPage();
 String drainIp = ""; int drainWet = -1; unsigned long drainSeen = 0, drainAlarmAt = 0, camAt = 0, camOpened = 0; bool camOn = false;
 int bzPin = 4, board = 0;                   // buzzer pin (-1 = no buzzer).   board: 0 = plain ESP32-S3, no screen    1 = red MaTouch with the 2.8 inch screen
 bool bzFlip = false, bzClick = true, bzAlarm = false, saidReady = false, lcdOn = false;
@@ -264,6 +278,7 @@ void fxNote(int hz, int ms);
 int vcSaid(int o);
 String songName(int k);
 bool realMusic();
+bool vcStateOn(int pair);
 int nextLive(int cur, int tot);
 bool rDead(int k);
 extern const char* const RADIO_NAME[];
@@ -311,7 +326,7 @@ String esc(const String& s){                                    // safe to put i
   return o;
 }
 bool goodPin(int p){ return p == -1 || (p >= 1 && p <= 48 && p != 3 && p != 19 && p != 20 && !(p >= 35 && p <= 37) && p != 45 && p != 46); }
-bool goodPinFor(int p, int b){ if(b == 4) return p == -1 || p == 4 || p == 5 || p == 13 || p == 14 || (p >= 16 && p <= 19) || p == 23 || (p >= 25 && p <= 27) || p == 32 || p == 33; if(b == 3) return p == -1 || p == 22 || p == 27; if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21 || p == 44;      /* 6.5: 44 is the RXD wire of the UART plug */ return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
+bool goodPinFor(int p, int b){ if(b == 5) return p == -1 || p == 1 || p == 2 || p == 14 || p == 21 || p == 41 || p == 42 || p == 47;      /* 8.6: the camera board */ if(b == 4) return p == -1 || p == 4 || p == 5 || p == 13 || p == 14 || (p >= 16 && p <= 19) || p == 23 || (p >= 25 && p <= 27) || p == 32 || p == 33; if(b == 3) return p == -1 || p == 22 || p == 27; if(b == 1) return p == -1 || (p >= 4 && p <= 7); if(b == 2) return p == -1 || p == 2 || p == 14 || p == 21 || p == 44;      /* 6.5: 44 is the RXD wire of the UART plug */ return goodPin(p); }      // the red MaTouch has only 4 spare pins: 4 5 6 7.  The 2.8 inch touch board: 2, 14, 21 (its small plug)
 
 // ------------------------------------------------------------ the relays
 void setRelay(int i, bool v){
@@ -489,7 +504,7 @@ void stopAP(){
 }
 void startSTA(){
   stopAP();
-  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.setHostname("amy-box"); WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.setHostname(board == 5 ? "moto-cam" : "amy-box"); WiFi.setTxPower(WIFI_POWER_19_5dBm);
   scanWifi();                                                     // listen first: pick the strongest Mary Wi-Fi and remember how strong it is
   wReason = 0;
   if(tgtCh) WiFi.begin(joinSsid.c_str(), joinPass.c_str(), tgtCh, tgtBss); else WiFi.begin(ssid.c_str(), pass.c_str());
@@ -515,7 +530,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "8.4"
+#define BOX_VER "8.6"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6421,7 +6436,7 @@ bool hubFind(){                                                     // the Jetso
   IPAddress ip;
   if(ip.fromString(hubHost)){ hubIp = ip; return true; }
   if(hubHost.endsWith(".local")){
-    if(!mdnsUp){ mdnsUp = MDNS.begin("amy-box"); }
+    if(!mdnsUp){ mdnsUp = MDNS.begin(board == 5 ? "moto-cam" : "amy-box"); }
     ip = MDNS.queryHost(hubHost.substring(0, hubHost.length() - 6), 1500);
     if((uint32_t)ip != 0){ hubIp = ip; return true; }
     return false;
@@ -6437,7 +6452,7 @@ bool hubGet(const String& path, String& body){
   if(r != 200){ if(++hubFails >= 3){ hubIp = IPAddress(); hubFails = 0; } return false; }
   hubFails = 0; return true;
 }
-String hubName(){ return board == 3 ? String("YELLOW ") + nm[0] : board == 2 ? String("BLACK ") + nm[0] : board == 4 ? String("SMALL ") + nm[0] : String("BOX ") + nm[0]; }
+String hubName(){ return board == 5 ? String("CAMERA") : board == 3 ? String("YELLOW ") + nm[0] : board == 2 ? String("BLACK ") + nm[0] : board == 4 ? String("SMALL ") + nm[0] : String("BOX ") + nm[0]; }
 void hubHello(){
   String b;
   bool ok = hubGet("/hello?k=" + urlEnc(lpw) + "&n=" + urlEnc(hubName()) + "&ip=" + WiFi.localIP().toString() + "&s=" + urlEnc(stateText()), b);
@@ -6728,6 +6743,7 @@ struct Peer { String ip, n, s, m; unsigned long seen; };
 String nmList(){ String o; for(int i = 0; i < NREL; i++){ if(i) o += ','; o += nm[i]; } return o; }
 Peer peers[12]; int nPeers = 0;
 void peerPut(const String& ip, const String& n, const String& st, const String& mm = ""){
+  if(n == "CAMERA"){ camIp = ip; camIpSeen = millis(); }      // 8.6: a camera board on this Wi-Fi
   if(n == "Drain pan"){ drainIp = ip; int w = st == "WET" ? 1 : 0; if(w && drainWet != 1) drainAlarmAt = 0; drainWet = w; drainSeen = millis(); }
   int k = -1; for(int i = 0; i < nPeers; i++) if(peers[i].ip == ip) k = i;
   if(k < 0){ if(nPeers < 12) k = nPeers++; else { k = 0; for(int i = 1; i < nPeers; i++) if(peers[i].seen < peers[k].seen) k = i; } }
@@ -6961,9 +6977,10 @@ void tileTap(int slot){                                            // a finger o
   int id = tileId(slot);
   if(id < 0) return;
   fxNote(1500, 30);
-  if(drainTile(id)){ camOn = true; camAt = 0; camOpened = millis(); return; }
+  if(drainTile(id)){ camSrc5 = false; camOn = true; camAt = 0; camOpened = millis(); return; }
   if(id == 22){                                                    // CAMERA: the picture from the other box (Drain Watch) on the same Wi-Fi
-    if(!drainIp.length()){ showMsg("NO CAMERA BOX FOUND"); return; }
+    camSrc5 = camIp.length() && millis() - camIpSeen < 120000UL;      // 8.6: the camera board first, the drain camera when there is none
+    if(!camSrc5 && !drainIp.length()){ showMsg("NO CAMERA BOX FOUND"); return; }
     camOn = true; camAt = 0; camOpened = millis(); return; }
   if(id == 4){
     if(!musicOn && !realMusic()){ fxNote(500, 120); showMsg(WiFi.status() == WL_CONNECTED ? "NO RADIO RIGHT NOW" : "NO WI-FI FOR MUSIC"); return; }      // 8.2: no Wi-Fi, no pretend music
@@ -6991,7 +7008,7 @@ void tileTap(int slot){                                            // a finger o
   if(id == 8){ for(int i = 0; i < NREL; i++) setRelay(i, false); if(bzAlarm) setBuzz(false); musicOn = false; fxNote(600, 90); fxNote(400, 170); sayClip(13); showMsg("ALL OFF"); reportTag = ""; needReport = true; return; }
   if(id == 9){
     if(realMusic()){ int k = btSel() ? 0 : nextLive(sdCur, sdSongN + NRADIO); sdWant = k; musicOn = true; showMsg(songName(k)); return; }      // the next station or song, stepping over the ones that do not answer
-    int k = (song + 1) % 4; songWant = k; musicOn = true; showMsg(SONG_NAME[k]); return; }
+    fxNote(500, 120); showMsg(WiFi.status() == WL_CONNECTED ? "NO RADIO RIGHT NOW" : "NO WI-FI FOR MUSIC"); return; }      // 8.5: no toy tune names any more
   if(id == 10){ volSet = volSet % 3 + 1; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); fxNote(784, 200); sayClip(9); showMsg(String("LOUD ") + String(volSet)); return; }
   if(tileBuzz(id)){ setBuzz(!bzAlarm); if(!bzAlarm) sayClip(6); showMsg(bzAlarm ? "BUZZER ON" : "BUZZER OFF"); }
   else if(isDoor(id)){ setRelay(id, true); pulseEnd[id] = millis() + 700; if(!pulseEnd[id]) pulseEnd[id] = 1; if(spk) announce(id, true); else beep(1, 90, 110); }
@@ -7077,7 +7094,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 8.4. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 8.5. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7257,7 +7274,7 @@ String page(const String& note){
   h += board == 2 ? " selected" : "";
   h += ">2.8 inch touch screen board (plug says IO2 IO3 IO14 IO21)</option><option value=1";
   h += board == 1 ? " selected" : "";
-  h += ">Red MaTouch with the 2.8 inch screen</option>"; if(CYD) h += board == 4 ? "<option value=4 selected>Small board with the tiny screen</option>" : "<option value=3 selected>Yellow 2.8 inch touch board</option>"; h += "</select>";
+  h += ">Red MaTouch with the 2.8 inch screen</option>"; if(!CYD) h += String("<option value=5") + (board == 5 ? " selected" : "") + ">ESP32-S3 camera board (no screen)</option>"; if(CYD) h += board == 4 ? "<option value=4 selected>Small board with the tiny screen</option>" : "<option value=3 selected>Yellow 2.8 inch touch board</option>"; h += "</select>";
   h += "<small>Picture upside down or backwards? Pick the next screen turn. Colors look like a film negative? Change the colors. A tap hits the wrong square? Pick the next touch.</small><select name=lr>";
   for(int i = 0; i < 4; i++){ h += "<option value=" + String(i) + (lcdRot == i ? " selected" : "") + ">Screen turn " + String(i + 1) + "</option>"; }
   h += "</select><select name=li><option value=1";
@@ -7277,7 +7294,8 @@ String page(const String& note){
   h += "</div><small>Mary&#39;s Magic Box 6.0 - hold the BOOT button 6 seconds to erase the setup.</small></body></html>";
   return h;
 }
-void handleRoot(){ web.send(200, "text/html", page("")); }
+void handleRoot(){ if(board == 5 && cam5Ok && !apUp && !web.hasArg("s")){ handleCamPage(); return; }      // 8.6: the camera board opens on its live picture (setup is at /?s=1)
+  web.send(200, "text/html", page("")); }
 void handleSave(){
   String s = web.arg("ssid2"); s.trim(); if(!s.length()) s = web.arg("ssid");
   String c = web.arg("code"); c.trim();
@@ -7286,12 +7304,12 @@ void handleSave(){
   if(!c.length()) c = code;                                       // no code typed: keep the old one (or none - the box still works at home)
   if(c.length() && !goodCode(c)){ web.send(200, "text/html", page("That secret code is not right. Leave it empty if you do not have it.")); return; }
   String pw = web.arg("pass"); if(!pw.length() && s == ssid) pw = pass;      // password left empty: keep the saved one
-  int nb = web.arg("bd").toInt(); if(nb < 0 || nb > 2) nb = 0; if(CYD) nb = board;
+  int nb = web.arg("bd").toInt(); if(nb != 5 && (nb < 0 || nb > 2)) nb = 0; if(CYD) nb = board;
   bool swap = nb != board;                                       // a different board was picked: start from that board's own pins
   int np[NREL];
   for(int i = 0; i < NREL; i++){
     np[i] = web.hasArg("p" + String(i + 1)) && web.arg("p" + String(i + 1)).length() ? web.arg("p" + String(i + 1)).toInt() : -1;
-    if(swap) np[i] = (i == 0 ? (nb == 2 ? 2 : nb == 3 ? 22 : 5) : -1);
+    if(swap) np[i] = (i == 0 && nb != 5 ? (nb == 2 ? 2 : nb == 3 ? 22 : 5) : -1);
     if(!goodPinFor(np[i], nb)){ web.send(200, "text/html", page("Pin " + String(np[i]) + " cannot be used for a relay on this board.")); return; }
     for(int j = 0; j < i; j++) if(np[i] >= 0 && np[i] == np[j]){ web.send(200, "text/html", page("Two relays cannot share pin " + String(np[i]) + ".")); return; }
   }
@@ -7335,6 +7353,106 @@ void handleOther(){                                             // any other add
   web.sendHeader("Location", "http://" + ip + "/", true); web.send(302, "text/plain", "");
 }
 
+
+// ============================================================ 8.6 THE CAMERA BOARD
+// ESP32-S3 CAM board (ESP32-S3-WROOM-1 N16R8, two USB-C plugs, camera plug for OV2640 / OV3660 / OV5640).
+// Camera wires on that board: clock 15, data 11 9 8 10 12 18 17 16, picture clock 13, frame 6, line 7, control 4 and 5.
+bool cam5Start(){
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  camera_config_t c; memset(&c, 0, sizeof(c));
+  c.ledc_channel = LEDC_CHANNEL_0; c.ledc_timer = LEDC_TIMER_0;
+  c.pin_d0 = 11; c.pin_d1 = 9; c.pin_d2 = 8; c.pin_d3 = 10; c.pin_d4 = 12; c.pin_d5 = 18; c.pin_d6 = 17; c.pin_d7 = 16;
+  c.pin_xclk = 15; c.pin_pclk = 13; c.pin_vsync = 6; c.pin_href = 7;
+  c.pin_sscb_sda = 4; c.pin_sscb_scl = 5; c.pin_pwdn = -1; c.pin_reset = -1;
+  c.xclk_freq_hz = 20000000; c.pixel_format = PIXFORMAT_JPEG;
+  cam5Big = psramFound();                                           // with the big memory: 640 x 480.  Without it: 320 x 240
+  c.frame_size = cam5Big ? FRAMESIZE_VGA : FRAMESIZE_QVGA;
+  c.jpeg_quality = 12; c.fb_count = cam5Big ? 2 : 1;
+  c.fb_location = cam5Big ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+  c.grab_mode = cam5Big ? CAMERA_GRAB_LATEST : CAMERA_GRAB_WHEN_EMPTY;
+  if(esp_camera_init(&c) != ESP_OK){                                // no camera here: let go of its wires, this is some other board
+    esp_camera_deinit(); pinMode(15, INPUT); pinMode(4, INPUT); pinMode(5, INPUT);
+    return false;
+  }
+  sensor_t* s = esp_camera_sensor_get();
+  if(s && s->id.PID == OV3660_PID){ s->set_vflip(s, 1); s->set_brightness(s, 1); s->set_saturation(s, -2); }      // the OV3660 comes upside down and too colorful
+  return true;
+#else
+  return false;
+#endif
+}
+void cam5No(){ web.sendHeader("Cache-Control", "no-store"); web.send(503, "text/plain", "no camera picture"); }
+void handleBigJpg(){                                              // the whole picture, as the camera took it
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  if(board != 5 || !cam5Ok){ cam5No(); return; }
+  camera_fb_t* fb = esp_camera_fb_get();
+  if(!fb){ cam5No(); return; }
+  cam5Shots++;
+  web.sendHeader("Cache-Control", "no-store"); web.sendHeader("Access-Control-Allow-Origin", "*");
+  web.send_P(200, "image/jpeg", (const char*)fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+#else
+  cam5No();
+#endif
+}
+void handlePicJpg(){                                              // the small picture (320 x 240) that the black box's CAMERA button asks for
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  if(board != 5 || !cam5Ok){ cam5No(); return; }
+  camera_fb_t* fb = esp_camera_fb_get();
+  if(!fb){ cam5No(); return; }
+  cam5Shots++;
+  web.sendHeader("Cache-Control", "no-store"); web.sendHeader("Access-Control-Allow-Origin", "*");
+  if(fb->width <= 320){ web.send_P(200, "image/jpeg", (const char*)fb->buf, fb->len); esp_camera_fb_return(fb); return; }
+  int W = fb->width, H = fb->height, k = W / 320; if(k < 1) k = 1;
+  int w2 = W / k, h2 = H / k;
+  uint8_t* px = (uint8_t*)ps_malloc((size_t)W * H * 3);
+  bool ok = px && fmt2rgb888(fb->buf, fb->len, PIXFORMAT_JPEG, px);
+  esp_camera_fb_return(fb);
+  uint8_t* out = NULL; size_t outLen = 0;
+  if(ok){
+    for(int y = 0; y < h2; y++){                                   // make it smaller: every k-th dot of every k-th line (written over the start of the same memory)
+      const uint8_t* src = px + (size_t)y * k * W * 3; uint8_t* dst = px + (size_t)y * w2 * 3;
+      for(int x = 0; x < w2; x++){ const uint8_t* p = src + (size_t)x * k * 3; dst[x * 3] = p[0]; dst[x * 3 + 1] = p[1]; dst[x * 3 + 2] = p[2]; }
+    }
+    ok = fmt2jpg(px, (size_t)w2 * h2 * 3, w2, h2, PIXFORMAT_RGB888, 80, &out, &outLen);
+  }
+  if(px) free(px);
+  if(ok && out && outLen > 100 && outLen < 90000) web.send_P(200, "image/jpeg", (const char*)out, outLen); else web.send(503, "text/plain", "no camera picture");
+  if(out) free(out);
+#else
+  cam5No();
+#endif
+}
+void handleCamPage(){                                             // the live picture, on any phone or computer on the same Wi-Fi
+  String h = F("<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Moto Cam</title><style>"
+    "html,body{margin:0;height:100%;background:#04060f;color:#eaf4ff;font-family:system-ui,Arial}"
+    "#top{display:flex;align-items:center;gap:10px;padding:10px 14px}"
+    "#top b{font-size:20px;letter-spacing:4px;color:#49e9ff}#st{margin-left:auto;font-size:13px;letter-spacing:2px;color:#5ff2a8}"
+    "#box{display:flex;justify-content:center;align-items:center;padding:0 8px}"
+    "#v{width:100%;max-width:1100px;max-height:78vh;object-fit:contain;border-radius:14px;border:2px solid #2a6f96;background:#000}"
+    "#bar{display:flex;gap:10px;justify-content:center;padding:12px;flex-wrap:wrap}"
+    "a.k,button.k{font-size:16px;font-weight:800;letter-spacing:2px;padding:13px 20px;border-radius:12px;border:0;text-decoration:none;color:#04101f;background:linear-gradient(135deg,#49e9ff,#7ad7ff)}"
+    "a.g{background:none;color:#93aacb;border:1px solid #2a4a6a}"
+    "small{display:block;text-align:center;color:#4a5f82;letter-spacing:1px;padding-bottom:10px}"
+    "</style></head><body><div id=top><b>MOTO CAM</b><span id=st>STARTING</span></div>"
+    "<div id=box><img id=v alt=''></div>"
+    "<div id=bar><button class=k id=pz>PAUSE</button><a class=k href='/big.jpg' download='moto-cam.jpg'>SAVE PHOTO</a><a class='k g' href='/?s=1'>SETUP</a></div>"
+    "<small>&copy; Moto Takeda 316-304-5398</small>"
+    "<script>var v=document.getElementById('v'),st=document.getElementById('st'),run=true,n=0,t0=Date.now();"
+    "function next(){if(!run)return;var i=new Image();i.onload=function(){v.src=i.src;n++;st.textContent='LIVE';st.style.color='#5ff2a8';setTimeout(next,120)};"
+    "i.onerror=function(){st.textContent='NO PICTURE';st.style.color='#ff7b7b';setTimeout(next,1500)};i.src='/big.jpg?t='+Date.now()}"
+    "document.getElementById('pz').onclick=function(){run=!run;this.textContent=run?'PAUSE':'GO';if(run)next();else{st.textContent='PAUSED';st.style.color='#ffd36a'}};"
+    "next();</script></body></html>");
+  web.sendHeader("Cache-Control", "no-store");
+  web.send(200, "text/html", h);
+}
+void cam5Loop(){                                                  // the camera board gets its own name on the Wi-Fi: http://moto-cam.local
+  if(board != 5 || apUp || WiFi.status() != WL_CONNECTED) return;
+  static bool told = false;
+  if(!mdnsUp){ mdnsUp = MDNS.begin("moto-cam"); if(mdnsUp) MDNS.addService("http", "tcp", 80); }
+  if(!told){ told = true; Serial.print("CAMERA PAGE: http://"); Serial.print(WiFi.localIP().toString()); Serial.println("/   or   http://moto-cam.local/"); }
+}
+
 void setup(){
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
   Serial.begin(115200, SERIAL_8N1, -1, 43);                       // 6.5: the box only sends text (TXD 43).  RXD (44) is left free: the LIGHT relay sits on it
@@ -7353,13 +7471,20 @@ void setup(){
   activeLow = prefs.getBool("al", true); checkCert = prefs.getBool("cc", true);
   for(int i = 0; i < NREL; i++) nm[i] = cleanName(prefs.getString((String("n") + String(i + 1)).c_str(), ""), i);
   gKey = prefs.getString("gk", ""); gKey.trim(); gTalk = prefs.getString("gm", gTalk); gVoice = prefs.getString("gv", gVoice);
-  if(psramFound()){ recL = (int16_t*)ps_malloc(16000 * 8 * 2); recR = (int16_t*)ps_malloc(16000 * 8 * 2); vBuf = (int16_t*)ps_malloc(16000 * 40 * 2); }
+  if(!CYD){                                                       // 8.6: is this the camera board?  Looked at on the very first start, and on every start once it is known
+    int bd0 = prefs.getInt("bd", -1);
+    if(bd0 == 5 || bd0 == -1){
+      cam5Ok = cam5Start();
+      if(cam5Ok || bd0 == 5){ board = 5; if(bd0 != 5) prefs.putInt("bd", 5); Serial.println(cam5Ok ? "Found the camera board. The camera works." : "Camera board, but the camera does not answer. Is its ribbon pushed in?"); }
+    }
+  }
+  if(board != 5 && psramFound()){ recL = (int16_t*)ps_malloc(16000 * 8 * 2); recR = (int16_t*)ps_malloc(16000 * 8 * 2); vBuf = (int16_t*)ps_malloc(16000 * 40 * 2); }
   if(!recL || !recR || !vBuf) gKey = "";                         // no big memory on this board: Mary does not talk here
   else xTaskCreatePinnedToCore(aiTask, "mary", 16384, NULL, 1, NULL, 1);      // 7.4: the listening has the other half of the chip, away from the music
   hubHost = prefs.getString("jh", "moto-desktop.local"); hubHost.trim(); lpw = prefs.getString("lp", "04170417");
   volSet = prefs.getInt("vo", 2); if(volSet < 1 || volSet > 3) volSet = 2;
   spkPin = prefs.getInt("sd", 0); if(spkPin != 6 && spkPin != 8) spkPin = 0;
-  board = prefs.getInt("bd", 0); if(board < 0 || board > 2) board = 0;
+  board = prefs.getInt("bd", 0); if(board != 5 && (board < 0 || board > 2)) board = 0;
   if(CYD){
     board = 3;
     pinMode(21, INPUT_PULLDOWN); pinMode(22, INPUT_PULLDOWN); delay(3);      // the small board's tiny screen holds both of these wires up; the yellow board does not
@@ -7389,7 +7514,7 @@ void setup(){
   if(board == 2){ pinMode(1, OUTPUT); digitalWrite(1, HIGH); if(!tpOk) tpInit(); auInit(); }      // touch board: pin 1 high = speaker amplifier off (no hiss)
   if(board == 3){ pinMode(4, OUTPUT); digitalWrite(4, HIGH); pinMode(16, OUTPUT); digitalWrite(16, HIGH); pinMode(17, OUTPUT); digitalWrite(17, HIGH); auInit(); tpInit3(); }      // yellow board: its little color light off, sound, touch
   if(board == 4){ oInit(); oledDraw(); }
-  if(board && board != 4){ lcdInit(); lcdDraw(true); }
+  if(board && board != 4 && board != 5){ lcdInit(); lcdDraw(true); }
   WiFi.persistent(false);
   web.on("/", HTTP_GET, handleRoot);
   web.on("/save", HTTP_POST, handleSave);
@@ -7399,6 +7524,9 @@ void setup(){
   web.on("/hub", HTTP_GET, handleHub);
   web.on("/peers", HTTP_GET, handlePeers);
   web.on("/claude", HTTP_GET, handleReport);
+  web.on("/cam", HTTP_GET, handleCamPage);         // 8.6: the camera board - the live page, the big picture, the small picture for the black box
+  web.on("/big.jpg", HTTP_GET, handleBigJpg);
+  web.on("/pic.jpg", HTTP_GET, handlePicJpg);
   web.on("/heard.wav", HTTP_GET, handleWav);      // the very sound the box heard      // SHOW CLAUDE: the whole story of the box on one page
   web.onNotFound(handleOther);
   WiFi.onEvent([](WiFiEvent_t e, WiFiEventInfo_t info){ wReason = info.wifi_sta_disconnected.reason; }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);      // remember WHY Wi-Fi failed
@@ -7643,14 +7771,23 @@ static int vcPick(const int16_t* x, int n, int* shown, int* almost){
   if(shown) *shown = d1 > 998.0f ? 999 : (int)(d1 + 0.5f);
   if(almost) *almost = b;                                          // which order it nearly was, so the screen can say so
   if(b < 0 || d1 > 998.0f) return -1;
-  for(int o = 0; o < VC_ORD; o++) if(o != b && per[o] < d2) d2 = per[o];      // the next nearest order
+  for(int o = 0; o < VC_ORD; o++) if((o >> 1) != (b >> 1) && per[o] < d2) d2 = per[o];      // 8.5: the nearest order of the OTHER kind (lights against music) - on and off of the same thing are settled below
   float intra = 1e9f, isum = 0; int ic = 0;                        // how much his own teachings differ from each other: that sets how close is close enough
   for(int i = 0; i < VC_SL; i++) for(int j = i + 1; j < VC_SL; j++){ VTpl* p = &vt[b * VC_SL + i]; VTpl* r = &vt[b * VC_SL + j]; if(p->n && r->n){ float d = vcDist(p->f, p->n, r->f, r->n, 60.0f); if(d < 1e8f){ isum += d; ic++; } } }
   if(ic) intra = isum / ic;                                        // the usual difference, not the smallest one, so more teachings do not make it stricter
   float lim = intra > 1e8f ? VC_LIM0 : intra * VC_K; if(lim < VC_LIM0) lim = VC_LIM0; if(lim > VC_LIM1) lim = VC_LIM1;
   float need = VC_RAT + VC_SLOPE * (d1 - 22.0f); if(need < VC_RAT) need = VC_RAT; if(need > 1.45f) need = 1.45f;      // the further from how he taught it, the clearer the winner has to be
   if(d2 > 998.0f) d2 = 95.0f;                                      // nothing else came near at all
-  if(d1 < lim && d2 / d1 > need){ vcFit = d1 < lim * 0.8f && d2 / d1 > need + 0.2f; return b; }
+  if(d1 < lim && d2 / d1 > need){
+    vcFit = d1 < lim * 0.8f && d2 / d1 > need + 0.2f;
+    float ds = per[b ^ 1];                                         // 8.5: its twin - ON beside OFF.  They sound almost alike, so the thing itself breaks the tie
+    bool clear = ds > 998.0f || ds / d1 > need;
+    bool isOn = vcStateOn(b >> 1), wantOn = !(b & 1);
+    bool tie = !clear || (wantOn == isOn && ds / d1 < 1.35f);      // cannot tell on from off, or it asks for what is already so
+    if(tie && d2 / d1 <= need + 0.2f) return -1;                   // a tie is only broken when it was clearly LIGHTS (or clearly MUSIC), so stray talk does not flip the light
+    if(tie) b = (b & ~1) | (isOn ? 1 : 0);                         // the thing is on: he said OFF.  It is off: he said ON
+    return b;
+  }
   return -1;
 }
 // ---- 7.2 voice core end
@@ -7855,9 +7992,10 @@ void aiTask(void* arg){
 
 // ---- the drain pan (Moto Drain Watch board on the same Wi-Fi)
 bool camShow(){                                                   // the drain camera picture, full screen
-  if(!lcdOn || !drainIp.length() || WiFi.status() != WL_CONNECTED) return false;
-  WiFiClient c; HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(3000);      // 7.4: the camera picture waits a short time only, so the screen stays alive
-  if(!h.begin(c, "http://" + drainIp + "/pic.jpg")) return false;
+  String camFrom = camSrc5 ? camIp : drainIp;
+  if(!lcdOn || !camFrom.length() || WiFi.status() != WL_CONNECTED) return false;
+  WiFiClient c; HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(camSrc5 ? 4000 : 3000);      // 7.4: the camera picture waits a short time only, so the screen stays alive
+  if(!h.begin(c, "http://" + camFrom + "/pic.jpg")) return false;
   bool good = false;
   if(h.GET() == 200){
     int len = h.getSize();
@@ -7893,7 +8031,8 @@ void drainLoop(){
     if(!camAt || millis() - camAt > 3000UL){
       camAt = millis(); if(!camAt) camAt = 1;
       if(camShow()){
-        lcdText(4, 4, drainWet == 1 ? "WATER IN PAN!" : "DRAIN: DRY", 0xFFFF, drainWet == 1 ? rgb(200, 20, 30) : rgb(20, 120, 60), 1);
+        if(camSrc5) lcdText(4, 4, "CAMERA", 0xFFFF, rgb(20, 90, 160), 1);
+        else lcdText(4, 4, drainWet == 1 ? "WATER IN PAN!" : "DRAIN: DRY", 0xFFFF, drainWet == 1 ? rgb(200, 20, 30) : rgb(20, 120, 60), 1);
         lcdText(4, 212, "TAP TO GO BACK", 0xFFFF, 0x0000, 1);
       } else {
         lcdFill(0, 0, LCD_W, LCD_H, 0x0000);
@@ -8283,6 +8422,11 @@ void fix565(uint8_t* px, long n){                                 // the chip's 
   }
 }
 bool realMusic(){ return muBuf && (sdSongN > 0 || WiFi.status() == WL_CONNECTED); }
+bool vcStateOn(int pair){                                         // 8.5: is the thing on right now?  0 = the light, 1 = the music
+  if(pair == 1) return musicOn;
+  for(int i = 0; i < NREL; i++) if(pins[i] >= 0 && (nameHas(i, "LIGHT") || nameHas(i, "LAMP")) && on[i]) return true;
+  return false;
+}
 void sdKeySave(const String& k){
   fsKeySave(k);                                                    // 7.1: also in the box's own memory, which a new flash does not wipe
 #if HAS_SD
@@ -8545,9 +8689,10 @@ void aiShow(){
       volSet = v; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); done = String("LOUD ") + String(volSet); }
     else if(aiCmd == "NEXT SONG"){                                 // the next song or station
       if(realMusic()){ int k = btSel() ? 0 : nextLive(sdCur, sdSongN + NRADIO); sdWant = k; musicOn = true; done = songName(k); }
-      else { int k = (song + 1) % 4; songWant = k; musicOn = true; done = SONG_NAME[k]; } }
+      else done = WiFi.status() == WL_CONNECTED ? "NO RADIO RIGHT NOW" : "NO WI-FI FOR MUSIC"; }
     else if(aiCmd == "CAM ON"){                                    // the picture from the other box's camera
-      if(!drainIp.length()) done = "NO CAMERA BOX";
+      camSrc5 = camIp.length() && millis() - camIpSeen < 120000UL;
+      if(!camSrc5 && !drainIp.length()) done = "NO CAMERA BOX";
       else { camOn = true; camAt = 0; camOpened = millis(); done = "CAMERA ON"; } }
     else if(aiCmd == "CAM OFF"){ if(camOn){ camOn = false; lcdShown = ""; lcdDraw(true); } done = "CAMERA OFF"; }
     else for(int i = 0; i < NREL; i++){
@@ -8731,6 +8876,7 @@ void loop(){
   subLoop();          tpLoop();
   hubLoop();          tpLoop();
   peerLoop();         tpLoop();
+  cam5Loop();
   drainLoop();        tpLoop();
   webLoop();          tpLoop();
   phLoop();           tpLoop();
