@@ -1,4 +1,7 @@
-// AMYRELAY_VERSION 7.8   (the build names the files with this number)
+// AMYRELAY_VERSION 7.9   (the build names the files with this number)
+// 7.9: 26 radio stations - Christian, uplifting, classical, pop, oldies, country.  The box finds out for itself which
+//      ones answer, skips the ones that do not, and tries them again every ten minutes.  The SHOW CLAUDE page lists
+//      every station with OK or DEAD beside it, so the dead links can be taken out for good.
 // 7.8: the screen answers the first tap now, and scrolls smoothly, because the finger is looked at many times in
 //      every round instead of once.  No Wi-Fi password to type any more: a Wi-Fi the box knows joins on its own,
 //      and any other one comes up with the last password already filled in, so it is one tap.
@@ -224,7 +227,7 @@ bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = 
 volatile bool muPlay = false;
 bool webFull = true, webKb = false, webSkip = false; volatile bool muReal = false; int jpgMode = -1;
 String wxText = ""; unsigned long wxAt = 0;
-#define NRADIO 6                                                   // 7.6: three Christian stations and three Christmas ones
+#define NRADIO 26                                                  // 7.9: plenty of stations; the box works out which ones answer
 static const uint8_t RED_JPG[637] = {255,216,255,224,0,16,74,70,73,70,0,1,1,0,0,1,0,1,0,0,255,219,0,67,0,3,2,2,3,2,2,3,3,3,3,4,3,3,4,5,8,5,5,4,4,5,10,7,7,6,8,12,10,12,12,11,10,11,11,13,14,18,16,13,14,17,14,11,11,16,22,16,17,19,20,21,21,21,12,15,23,24,22,20,24,18,20,21,20,255,219,0,67,1,3,4,4,5,4,5,9,5,5,9,20,13,11,13,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,255,192,0,17,8,0,16,0,16,3,1,17,0,2,17,1,3,17,1,255,196,0,31,0,0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,255,196,0,181,16,0,2,1,3,3,2,4,3,5,5,4,4,0,0,1,125,1,2,3,0,4,17,5,18,33,49,65,6,19,81,97,7,34,113,20,50,129,145,161,8,35,66,177,193,21,82,209,240,36,51,98,114,130,9,10,22,23,24,25,26,37,38,39,40,41,42,52,53,54,55,56,57,58,67,68,69,70,71,72,73,74,83,84,85,86,87,88,89,90,99,100,101,102,103,104,105,106,115,116,117,118,119,120,121,122,131,132,133,134,135,136,137,138,146,147,148,149,150,151,152,153,154,162,163,164,165,166,167,168,169,170,178,179,180,181,182,183,184,185,186,194,195,196,197,198,199,200,201,202,210,211,212,213,214,215,216,217,218,225,226,227,228,229,230,231,232,233,234,241,242,243,244,245,246,247,248,249,250,255,196,0,31,1,0,3,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,255,196,0,181,17,0,2,1,2,4,4,3,4,7,5,4,4,0,1,2,119,0,1,2,3,17,4,5,33,49,6,18,65,81,7,97,113,19,34,50,129,8,20,66,145,161,177,193,9,35,51,82,240,21,98,114,209,10,22,36,52,225,37,241,23,24,25,26,38,39,40,41,42,53,54,55,56,57,58,67,68,69,70,71,72,73,74,83,84,85,86,87,88,89,90,99,100,101,102,103,104,105,106,115,116,117,118,119,120,121,122,130,131,132,133,134,135,136,137,138,146,147,148,149,150,151,152,153,154,162,163,164,165,166,167,168,169,170,178,179,180,181,182,183,184,185,186,194,195,196,197,198,199,200,201,202,210,211,212,213,214,215,216,217,218,226,227,228,229,230,231,232,233,234,242,243,244,245,246,247,248,249,250,255,218,0,12,3,1,0,2,17,3,17,0,63,0,249,210,191,12,63,213,48,160,2,128,10,0,255,217};
 String drainIp = ""; int drainWet = -1; unsigned long drainSeen = 0, drainAlarmAt = 0, camAt = 0, camOpened = 0; bool camOn = false;
 int bzPin = 4, board = 0;                   // buzzer pin (-1 = no buzzer).   board: 0 = plain ESP32-S3, no screen    1 = red MaTouch with the 2.8 inch screen
@@ -247,6 +250,9 @@ void lcdDraw(bool force);
 void fxNote(int hz, int ms);
 int vcSaid(int o);
 String songName(int k);
+int nextLive(int cur, int tot);
+bool rDead(int k);
+extern const char* const RADIO_NAME[];
 void vcForget(int o);
 void vcCount();
 void sayClip(int k);
@@ -493,7 +499,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.8"
+#define BOX_VER "7.9"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6745,6 +6751,8 @@ void handleReport(){
   r += "\nSWITCHES: ";
   for(int i = 0; i < NREL; i++){ r += nm[i] + " " + String(on[i] ? "ON" : "off"); if(i < NREL - 1) r += ", "; }
   r += "\nMUSIC: " + String(musicOn ? "on" : "off") + ", station " + songName(sdCur) + "\n";
+  r += "\nRADIO STATIONS (DEAD ones need their link changed):\n";
+  for(int i = 0; i < NRADIO; i++) r += String("  ") + (rDead(i) ? "DEAD " : "ok   ") + RADIO_NAME[i] + "\n";
   r += "KEY: " + String(gKey.length() ? "saved" : "NOT SAVED") + "   SCREEN SAVER: " + String(asleep ? "asleep" : "awake") + "\n";
   r += "\nWHAT IT HEARD (newest first):\n";
   if(!vlogN) r += "  nothing yet\n";
@@ -6942,7 +6950,7 @@ void tileTap(int slot){                                            // a finger o
   if(id == 7){ lcdSleep(true); return; }
   if(id == 8){ for(int i = 0; i < NREL; i++) setRelay(i, false); if(bzAlarm) setBuzz(false); musicOn = false; fxNote(600, 90); fxNote(400, 170); sayClip(13); showMsg("ALL OFF"); reportTag = ""; needReport = true; return; }
   if(id == 9){
-    if(realMusic()){ int k = btSel() ? 0 : (sdCur + 1) % (sdSongN + NRADIO); sdWant = k; musicOn = true; showMsg(songName(k)); return; }      // the next station or SD card song
+    if(realMusic()){ int k = btSel() ? 0 : nextLive(sdCur, sdSongN + NRADIO); sdWant = k; musicOn = true; showMsg(songName(k)); return; }      // the next station or song, stepping over the ones that do not answer
     int k = (song + 1) % 4; songWant = k; musicOn = true; showMsg(SONG_NAME[k]); return; }
   if(id == 10){ volSet = volSet % 3 + 1; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); fxNote(784, 200); sayClip(9); showMsg(String("LOUD ") + String(volSet)); return; }
   if(tileBuzz(id)){ setBuzz(!bzAlarm); if(!bzAlarm) sayClip(6); showMsg(bzAlarm ? "BUZZER ON" : "BUZZER OFF"); }
@@ -7029,7 +7037,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.8. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 7.9. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -8205,14 +8213,57 @@ void sdKeySave(const String& k){
 #endif
 }
 // ---- real music: internet radio stations and MP3 songs from the SD card (black box: SD card slot on pins 38 40 39)
-static const char* const RADIO_NAME[NRADIO] = {"CHRISTIAN RADIO", "AIR1 WORSHIP", "PRAISE AND WORSHIP", "CHRISTMAS GOSPEL", "CHRISTMAS CLASSICS", "CHRISTMAS HITS"};
+static const char* const RADIO_NAME[NRADIO] = {
+  "CHRISTIAN RADIO", "AIR1 WORSHIP", "PRAISE AND WORSHIP", "CHRISTMAS GOSPEL",
+  "CHRISTMAS CLASSICS", "CHRISTMAS HITS", "CHRISTMAS MIX", "CHRISTMAS SPIRIT",
+  "CLASSICAL MUSIC", "CLASSICAL GUITAR", "MELLOW GOLD", "THE BREEZE",
+  "CHILLED OUT", "SMOOTH JAZZ", "VOCAL JAZZ", "THE BEATLES",
+  "GOOD TIME OLDIES", "THE EAGLE CLASSIC", "YACHT ROCK", "STAR 90s",
+  "LITE 80s", "THE MIX", "POWER 181 TOP 40", "UK TOP 40",
+  "REAL COUNTRY", "FRONT PORCH"};
 static const char* const RADIO_URL[NRADIO] = {
-  "http://emf.streamguys1.com/sk001_mp3_low_web",                  // K-LOVE: the one that has always played here
-  "http://emf.streamguys1.com/air1_mp3_low_web",                   // Air1 worship
-  "http://listen.181fm.com/181-praise_128k.mp3",                   // praise and worship
-  "http://listen.181fm.com/181-xgospel_128k.mp3",
-  "http://listen.181fm.com/181-xtraditional_128k.mp3",
-  "http://listen.181fm.com/181-xblender_128k.mp3"};
+  "http://emf.streamguys1.com/sk001_mp3_low_web",                 // K-LOVE: has always played on this box
+  "http://emf.streamguys1.com/air1_mp3_low_web",
+  "http://listen.181fm.com/181-praise_128k.mp3",
+  "http://listen.181fm.com/181-xgospel_128k.mp3",                 // has played on this box
+  "http://listen.181fm.com/181-xtraditional_128k.mp3",            // has played on this box
+  "http://listen.181fm.com/181-xblender_128k.mp3",                // has played on this box
+  "http://listen.181fm.com/181-christmas_128k.mp3",
+  "http://listen.181fm.com/181-xspirit_128k.mp3",
+  "http://listen.181fm.com/181-classical_128k.mp3",
+  "http://listen.181fm.com/181-classicalguitar_128k.mp3",
+  "http://listen.181fm.com/181-mellow_128k.mp3",
+  "http://listen.181fm.com/181-breeze_128k.mp3",
+  "http://listen.181fm.com/181-chilled_128k.mp3",
+  "http://listen.181fm.com/181-smoothjazz_128k.mp3",
+  "http://listen.181fm.com/181-vocaljazz_128k.mp3",
+  "http://listen.181fm.com/181-beatles_128k.mp3",
+  "http://listen.181fm.com/181-goodtime_128k.mp3",
+  "http://listen.181fm.com/181-eagle_128k.mp3",
+  "http://listen.181fm.com/181-yachtrock_128k.mp3",
+  "http://listen.181fm.com/181-star90s_128k.mp3",
+  "http://listen.181fm.com/181-lite80s_128k.mp3",
+  "http://listen.181fm.com/181-themix_128k.mp3",
+  "http://listen.181fm.com/181-power_128k.mp3",
+  "http://listen.181fm.com/181-uktop40_128k.mp3",
+  "http://listen.181fm.com/181-realcountry_128k.mp3",
+  "http://listen.181fm.com/181-frontporch_128k.mp3"};
+uint8_t rBad[NRADIO];                                             // 1 = this one did not answer; it is skipped until it is tried again
+uint32_t rBadAt[NRADIO];
+int radioOf(int cur){ return cur >= sdSongN && cur < sdSongN + NRADIO ? cur - sdSongN : -1; }      // which radio station this is, or -1 for an SD card song
+bool rDead(int k){                                                // dead, but every ten minutes it gets another chance
+  if(k < 0 || k >= NRADIO) return false;
+  if(!rBad[k]) return false;
+  if(millis() - rBadAt[k] > 600000UL){ rBad[k] = 0; return false; }
+  return true;
+}
+int nextLive(int cur, int tot){                                   // the next station worth trying: the dead ones are stepped over
+  for(int i = 1; i <= tot; i++){
+    int k = (cur + i) % tot; int r = radioOf(k);
+    if(r < 0 || !rDead(r)) return k;
+  }
+  return (cur + 1) % tot;
+}
 String songName(int k){
   if(k < 0) return String("MUSIC ON");
   if(k >= sdSongN + NRADIO) return String("PHONE BLUETOOTH");
@@ -8357,8 +8408,9 @@ void sdTask(void* arg){                                           // plays the m
         if(mpNet->isOpen()) { mp3 = new AudioGeneratorMP3(); mpBegun = true; ok = mp3->begin(mpNet, muOut); }
       }
       if(!ok){ mpStop(); muT = muH;
-        if(++fails >= 2){ sdCur = (sdCur + 1) % tot; fails = 0; drops++; }
-        if(drops >= tot){ musicOn = false; drops = 0; muT = muH; weakWifi = true; lcdShown = ""; vTaskDelay(500 / portTICK_PERIOD_MS); continue; }      // it cannot hold a station: stop, and say so, instead of grinding away
+        { int r = radioOf(sdCur); if(r >= 0){ rBad[r] = 1; rBadAt[r] = millis(); } }      // this one did not answer: step over it until it is tried again
+        if(++fails >= 1){ sdCur = nextLive(sdCur, tot); fails = 0; drops++; }
+        if(drops >= 6){ musicOn = false; drops = 0; muT = muH; weakWifi = true; lcdShown = ""; vTaskDelay(500 / portTICK_PERIOD_MS); continue; }      // six in a row would not answer: stop instead of grinding      // it cannot hold a station: stop, and say so, instead of grinding away
         vTaskDelay(1500 / portTICK_PERIOD_MS); continue; }
       began = millis();
     }
@@ -8366,13 +8418,14 @@ void sdTask(void* arg){                                           // plays the m
     if(!mp3->isRunning() || !mp3->loop()){
       bool wasSd = !ws && !bt && sdCur < sdSongN; bool quick = millis() - began < 8000;
       mpStop(); muT = muH;                                        // nothing half-played left over, so there is no horrible noise
-      if(wasSd){ sdCur = (sdCur + 1) % tot; drops = 0; }
+      if(wasSd){ sdCur = nextLive(sdCur, tot); drops = 0; }
       else if(quick && ++drops >= 3){                             // it keeps falling over within seconds
-        sdCur = (sdCur + 1) % tot;                                // try the next station before giving up on the lot
-        if(drops >= tot){ musicOn = false; drops = 0; weakWifi = true; lcdShown = ""; }
+        { int r = radioOf(sdCur); if(r >= 0){ rBad[r] = 1; rBadAt[r] = millis(); } }
+        sdCur = nextLive(sdCur, tot);                             // try the next live station before giving up on the lot
+        if(drops >= 6){ musicOn = false; drops = 0; weakWifi = true; lcdShown = ""; }
       }
       else vTaskDelay(1000 / portTICK_PERIOD_MS);                 // the radio dropped: join it again
-    } else { fails = 0; if(millis() - began > 8000) drops = 0; }
+    } else { fails = 0; if(millis() - began > 8000){ drops = 0; int r = radioOf(sdCur); if(r >= 0) rBad[r] = 0; } }      // playing a while: this station is a good one
     vTaskDelay(1);
   }
 }
@@ -8413,7 +8466,7 @@ void aiShow(){
       int v = volSet + (aiCmd == "MUSIC UP" ? 1 : -1); if(v < 1) v = 1; if(v > 3) v = 3;
       volSet = v; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); done = String("LOUD ") + String(volSet); }
     else if(aiCmd == "NEXT SONG"){                                 // the next song or station
-      if(realMusic()){ int k = btSel() ? 0 : (sdCur + 1) % (sdSongN + NRADIO); sdWant = k; musicOn = true; done = songName(k); }
+      if(realMusic()){ int k = btSel() ? 0 : nextLive(sdCur, sdSongN + NRADIO); sdWant = k; musicOn = true; done = songName(k); }
       else { int k = (song + 1) % 4; songWant = k; musicOn = true; done = SONG_NAME[k]; } }
     else if(aiCmd == "CAM ON"){                                    // the picture from the other box's camera
       if(!drainIp.length()) done = "NO CAMERA BOX";
