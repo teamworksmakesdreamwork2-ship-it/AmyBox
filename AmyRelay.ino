@@ -1,4 +1,6 @@
-// AMYRELAY_VERSION 7.5   (the build names the files with this number)
+// AMYRELAY_VERSION 7.6   (the build names the files with this number)
+// 7.6: the box now keeps the last TWO Wi-Fi names and passwords and joins whichever one is strongest where it sits,
+//      so it can be carried between the garage and the house with nothing to set.  More Christian radio stations too.
 // 7.5: four orders only - LIGHTS ON, LIGHTS OFF, MUSIC ON, MUSIC OFF.  The MUSIC UP teaching had gone bad and was
 //      grabbing "lights on"; it is gone now, and so is the part that quietly added new teachings by itself, which is
 //      what let it go bad.  Nothing has to be taught again: the four that are left keep what they already know.
@@ -160,7 +162,7 @@ WebServer web(80);
 DNSServer dns;
 WiFiClientSecure sub;                       // the line that stays open: Amy's commands come in here
 
-String ssid, pass, code, wifiList, line, reportTag;
+String ssid, pass, ssid2, pass2, code, wifiList, line, reportTag;      // 7.6: two Wi-Fi names, so the box can move between the house and the garage
 int pins[NREL] = {5, -1, -1, -1};
 void aiTask(void* arg);
 String gKey = "", gTalk = "gemini-flash-lite-latest", gVoice = "gemini-2.5-flash-preview-tts";      // Mary's AI (Google Gemini, free key)
@@ -208,7 +210,7 @@ bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = 
 volatile bool muPlay = false;
 bool webFull = true, webKb = false, webSkip = false; volatile bool muReal = false; int jpgMode = -1;
 String wxText = ""; unsigned long wxAt = 0;
-#define NRADIO 4
+#define NRADIO 6                                                   // 7.6: three Christian stations and three Christmas ones
 static const uint8_t RED_JPG[637] = {255,216,255,224,0,16,74,70,73,70,0,1,1,0,0,1,0,1,0,0,255,219,0,67,0,3,2,2,3,2,2,3,3,3,3,4,3,3,4,5,8,5,5,4,4,5,10,7,7,6,8,12,10,12,12,11,10,11,11,13,14,18,16,13,14,17,14,11,11,16,22,16,17,19,20,21,21,21,12,15,23,24,22,20,24,18,20,21,20,255,219,0,67,1,3,4,4,5,4,5,9,5,5,9,20,13,11,13,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,255,192,0,17,8,0,16,0,16,3,1,17,0,2,17,1,3,17,1,255,196,0,31,0,0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,255,196,0,181,16,0,2,1,3,3,2,4,3,5,5,4,4,0,0,1,125,1,2,3,0,4,17,5,18,33,49,65,6,19,81,97,7,34,113,20,50,129,145,161,8,35,66,177,193,21,82,209,240,36,51,98,114,130,9,10,22,23,24,25,26,37,38,39,40,41,42,52,53,54,55,56,57,58,67,68,69,70,71,72,73,74,83,84,85,86,87,88,89,90,99,100,101,102,103,104,105,106,115,116,117,118,119,120,121,122,131,132,133,134,135,136,137,138,146,147,148,149,150,151,152,153,154,162,163,164,165,166,167,168,169,170,178,179,180,181,182,183,184,185,186,194,195,196,197,198,199,200,201,202,210,211,212,213,214,215,216,217,218,225,226,227,228,229,230,231,232,233,234,241,242,243,244,245,246,247,248,249,250,255,196,0,31,1,0,3,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,255,196,0,181,17,0,2,1,2,4,4,3,4,7,5,4,4,0,1,2,119,0,1,2,3,17,4,5,33,49,6,18,65,81,7,97,113,19,34,50,129,8,20,66,145,161,177,193,9,35,51,82,240,21,98,114,209,10,22,36,52,225,37,241,23,24,25,26,38,39,40,41,42,53,54,55,56,57,58,67,68,69,70,71,72,73,74,83,84,85,86,87,88,89,90,99,100,101,102,103,104,105,106,115,116,117,118,119,120,121,122,130,131,132,133,134,135,136,137,138,146,147,148,149,150,151,152,153,154,162,163,164,165,166,167,168,169,170,178,179,180,181,182,183,184,185,186,194,195,196,197,198,199,200,201,202,210,211,212,213,214,215,216,217,218,226,227,228,229,230,231,232,233,234,242,243,244,245,246,247,248,249,250,255,218,0,12,3,1,0,2,17,3,17,0,63,0,249,210,191,12,63,213,48,160,2,128,10,0,255,217};
 String drainIp = ""; int drainWet = -1; unsigned long drainSeen = 0, drainAlarmAt = 0, camAt = 0, camOpened = 0; bool camOn = false;
 int bzPin = 4, board = 0;                   // buzzer pin (-1 = no buzzer).   board: 0 = plain ESP32-S3, no screen    1 = red MaTouch with the 2.8 inch screen
@@ -403,17 +405,20 @@ String wifiWhy(){                                                // plain words 
   return String("Looking for Wi-Fi...");
 }
 String normW(const String& s){ String o; for(unsigned int i = 0; i < s.length(); i++){ char c = s.charAt(i); if(isalnum((unsigned char)c)) o += (char)tolower((unsigned char)c); } return o; }
-bool isKnown(const String& s){ String n = normW(s); return s == ssid || n == "doctormagic" || n == "mjcaviness2"; }
-String knownPass(const String& s){ if(s == ssid) return pass; if(isKnown(s)) return String("Shocker1"); return String(""); }
+bool isKnown(const String& s){ String n = normW(s); return (ssid.length() && s == ssid) || (ssid2.length() && s == ssid2) || n == "doctormagic" || n == "mjcaviness2"; }
+String knownPass(const String& s){ if(ssid.length() && s == ssid) return pass; if(ssid2.length() && s == ssid2) return pass2; if(isKnown(s)) return String("Shocker1"); return String(""); }
+void wifiRemember(const String& s, const String& pw){              // the newest Wi-Fi goes in front, the one before it is kept behind: the last two are always there
+  if(!s.length()) return;
+  if(s != ssid){ ssid2 = ssid; pass2 = pass; prefs.putString("ssid2", ssid2); prefs.putString("pass2", pass2); }
+  ssid = s; pass = pw; prefs.putString("ssid", ssid); prefs.putString("pass", pass);
+}
 void scanWifi(){
   wifiList = ""; tgtRssi = -127; tgtCh = 0; joinSsid = ssid; joinPass = pass;
   int n = WiFi.scanNetworks();
-  int bS = -127, bA = -127, iS = -1, iA = -1;
+  int bA = -127, k = -1;
   for(int i = 0; i < n; i++){ String s = WiFi.SSID(i); int r = WiFi.RSSI(i); if(!s.length()) continue;
-    if(s == ssid && r > bS){ bS = r; iS = i; }
-    if(isKnown(s) && r > bA){ bA = r; iA = i; }
+    if(isKnown(s) && r > bA){ bA = r; k = i; }                    // 7.6: whichever Wi-Fi the box knows is strongest where it is sitting right now
   }
-  int k = iA >= 0 ? iA : iS; if(iS >= 0 && bS >= bA - 8) k = iS;      // your saved Wi-Fi when it is good, or else the strongest Wi-Fi the box knows (Mary's, Doctor Magic)
   if(k >= 0){ joinSsid = WiFi.SSID(k); joinPass = knownPass(joinSsid); tgtRssi = WiFi.RSSI(k); tgtCh = WiFi.channel(k); memcpy(tgtBss, WiFi.BSSID(k), 6); }
   wfN = 0;                                                        // the 5 strongest names for the Wi-Fi page on the screen
   for(int i = 0; i < n; i++){ String s = WiFi.SSID(i); int r = WiFi.RSSI(i); if(!s.length()) continue;
@@ -473,7 +478,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.5"
+#define BOX_VER "7.6"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6972,7 +6977,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.5. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 7.6. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7193,7 +7198,7 @@ void handleSave(){
   if(swap) nz = nb >= 2 ? -1 : 4;
   if(!goodPinFor(nz, nb)){ web.send(200, "text/html", page("Pin " + String(nz) + " cannot be used for the buzzer on this board.")); return; }
   for(int i = 0; i < NREL; i++) if(nz >= 0 && nz == np[i]){ web.send(200, "text/html", page("The buzzer cannot share pin " + String(nz) + " with a relay.")); return; }
-  prefs.putString("ssid", s); prefs.putString("pass", pw); prefs.putString("code", c);
+  wifiRemember(s, pw); prefs.putString("code", c);
   { String gk = web.arg("gk"); gk.trim(); if(gk.length() > 20) sdKeySave(gk); }
   prefs.putInt("bz", nz); prefs.putBool("bf", web.arg("bf") == "1"); prefs.putBool("bc", web.arg("bc") != "0"); prefs.putInt("bd", nb);
   prefs.putInt("lr", web.arg("lr").toInt() & 3); prefs.putInt("tf", web.arg("tf").toInt() & 3); prefs.putBool("li", web.arg("li") != "0");
@@ -7240,6 +7245,7 @@ void setup(){
   pinMode(BOOT_PIN, INPUT_PULLUP);
   prefs.begin("amybox", false);
   ssid = prefs.getString("ssid", ""); pass = prefs.getString("pass", "");
+  ssid2 = prefs.getString("ssid2", ""); pass2 = prefs.getString("pass2", "");      // the one before it
   if(!ssid.length()){ ssid = "mjcaviness2"; pass = "Shocker1"; }      // Mary's Wi-Fi is built in: nothing to type
   code = prefs.getString("code", "");
   for(int i = 0; i < NREL; i++){ pins[i] = prefs.getInt((String("p") + String(i + 1)).c_str(), i == 0 ? 5 : -1); if(!goodPin(pins[i])) pins[i] = -1; }
@@ -7812,7 +7818,7 @@ void kbClose(bool go){
   if(kbFor == 1 && t.length()) webAct = "/go?u=" + urlEnc(t);
   else if(kbFor == 4 && kbText.length()) webAct = "/type?enter=1&t=" + urlEnc(kbText);
   else if(kbFor == 2){                                             // a new Wi-Fi: save it and join it
-    ssid = wfPick; pass = kbText; prefs.putString("ssid", ssid); prefs.putString("pass", pass);
+    wifiRemember(wfPick, kbText);
     wfOn = false; showMsg(String("JOINING ") + ssid); lcdDraw(true); startSTA();
   }
   else if(kbFor == 5 && t.length()){ callText(t); showMsg("MESSAGE SENT"); }      // a written message to the other boxes and phones
@@ -8141,8 +8147,14 @@ void sdKeySave(const String& k){
 #endif
 }
 // ---- real music: internet radio stations and MP3 songs from the SD card (black box: SD card slot on pins 38 40 39)
-static const char* const RADIO_NAME[NRADIO] = {"CHRISTMAS GOSPEL", "CHRISTMAS CLASSICS", "CHRISTIAN RADIO", "CHRISTMAS HITS"};
-static const char* const RADIO_URL[NRADIO] = {"http://listen.181fm.com/181-xgospel_128k.mp3", "http://listen.181fm.com/181-xtraditional_128k.mp3", "http://emf.streamguys1.com/sk001_mp3_low_web", "http://listen.181fm.com/181-xblender_128k.mp3"};
+static const char* const RADIO_NAME[NRADIO] = {"CHRISTIAN RADIO", "AIR1 WORSHIP", "PRAISE AND WORSHIP", "CHRISTMAS GOSPEL", "CHRISTMAS CLASSICS", "CHRISTMAS HITS"};
+static const char* const RADIO_URL[NRADIO] = {
+  "http://emf.streamguys1.com/sk001_mp3_low_web",                  // K-LOVE: the one that has always played here
+  "http://emf.streamguys1.com/air1_mp3_low_web",                   // Air1 worship
+  "http://listen.181fm.com/181-praise_128k.mp3",                   // praise and worship
+  "http://listen.181fm.com/181-xgospel_128k.mp3",
+  "http://listen.181fm.com/181-xtraditional_128k.mp3",
+  "http://listen.181fm.com/181-xblender_128k.mp3"};
 String songName(int k){
   if(k < 0) return String("MUSIC ON");
   if(k >= sdSongN + NRADIO) return String("PHONE BLUETOOTH");
@@ -8288,7 +8300,7 @@ void sdTask(void* arg){                                           // plays the m
       }
       if(!ok){ mpStop(); muT = muH;
         if(++fails >= 2){ sdCur = (sdCur + 1) % tot; fails = 0; drops++; }
-        if(drops >= 3){ musicOn = false; drops = 0; muT = muH; weakWifi = true; lcdShown = ""; vTaskDelay(500 / portTICK_PERIOD_MS); continue; }      // it cannot hold a station: stop, and say so, instead of grinding away
+        if(drops >= tot){ musicOn = false; drops = 0; muT = muH; weakWifi = true; lcdShown = ""; vTaskDelay(500 / portTICK_PERIOD_MS); continue; }      // it cannot hold a station: stop, and say so, instead of grinding away
         vTaskDelay(1500 / portTICK_PERIOD_MS); continue; }
       began = millis();
     }
@@ -8297,7 +8309,10 @@ void sdTask(void* arg){                                           // plays the m
       bool wasSd = !ws && !bt && sdCur < sdSongN; bool quick = millis() - began < 8000;
       mpStop(); muT = muH;                                        // nothing half-played left over, so there is no horrible noise
       if(wasSd){ sdCur = (sdCur + 1) % tot; drops = 0; }
-      else if(quick && ++drops >= 3){ musicOn = false; drops = 0; weakWifi = true; lcdShown = ""; }      // it keeps falling over within seconds: the Wi-Fi is too weak for the radio
+      else if(quick && ++drops >= 3){                             // it keeps falling over within seconds
+        sdCur = (sdCur + 1) % tot;                                // try the next station before giving up on the lot
+        if(drops >= tot){ musicOn = false; drops = 0; weakWifi = true; lcdShown = ""; }
+      }
       else vTaskDelay(1000 / portTICK_PERIOD_MS);                 // the radio dropped: join it again
     } else { fails = 0; if(millis() - began > 8000) drops = 0; }
     vTaskDelay(1);
@@ -8517,6 +8532,7 @@ void callLoop(){
 }
 
 void loop(){
+  if(weakWifi){ weakWifi = false; fxNote(500, 120); showMsg(WiFi.status() != WL_CONNECTED || WiFi.RSSI() < -78 ? "WI-FI TOO WEAK FOR RADIO" : "NO RADIO RIGHT NOW"); }      // the radio stopped itself instead of grinding on
   wifiLoop();
   bzLoop();
   tpLoop();
