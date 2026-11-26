@@ -1,4 +1,10 @@
-// AMYRELAY_VERSION 7.6   (the build names the files with this number)
+// AMYRELAY_VERSION 7.8   (the build names the files with this number)
+// 7.8: the screen answers the first tap now, and scrolls smoothly, because the finger is looked at many times in
+//      every round instead of once.  No Wi-Fi password to type any more: a Wi-Fi the box knows joins on its own,
+//      and any other one comes up with the last password already filled in, so it is one tap.
+// 7.7: SHOW CLAUDE.  The box writes down everything it just did - every order it heard, the number, what it decided,
+//      the Wi-Fi, what is taught - and puts it on one page with a COPY button.  One tap, one paste, and Claude sees
+//      what the box saw instead of asking Moto to read the screen out loud.
 // 7.6: the box now keeps the last TWO Wi-Fi names and passwords and joins whichever one is strongest where it sits,
 //      so it can be carried between the garage and the house with nothing to set.  More Christian radio stations too.
 // 7.5: four orders only - LIGHTS ON, LIGHTS OFF, MUSIC ON, MUSIC OFF.  The MUSIC UP teaching had gone bad and was
@@ -200,6 +206,14 @@ uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bo
 typedef int8_t VRow[VC_NC];
 struct VTpl { uint8_t n; int8_t f[VC_NF][VC_NC]; };
 VTpl* vt = NULL; VRow* vcNow = NULL; float *vcRe = NULL, *vcIm = NULL, *vcFt = NULL, *vcMe = NULL, *vcEn = NULL;
+String vlog[12]; int vlogN = 0;                                    // the last dozen things the box heard or was taught, newest first
+void vlogAdd(const String& t){
+  unsigned long up = millis() / 1000;
+  char when[16]; snprintf(when, sizeof(when), "%lu:%02lu", up / 60, up % 60);
+  for(int i = 11; i > 0; i--) vlog[i] = vlog[i - 1];
+  vlog[0] = String(when) + "  " + t;
+  if(vlogN < 12) vlogN++;
+}
 bool vcOk = false, fsOk = false, teachOn = false, vcFit = false; volatile bool micHot = false, weakWifi = false; volatile int teachIdx = -1; int teachPg = 0; String cmdMsg = ""; int vcGot = 0;
 volatile bool listenOn = false; unsigned long listenAt = 0;        // VOICE stays on until he taps it again (or 90 seconds with nothing said)
 static const char* const VC_NAME[VC_ORD] = {"LIGHTS ON", "LIGHTS OFF", "MUSIC ON", "MUSIC OFF"};
@@ -232,6 +246,7 @@ void setBuzz(bool v);
 void lcdDraw(bool force);
 void fxNote(int hz, int ms);
 int vcSaid(int o);
+String songName(int k);
 void vcForget(int o);
 void vcCount();
 void sayClip(int k);
@@ -478,7 +493,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.6"
+#define BOX_VER "7.8"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6712,6 +6727,43 @@ void peerLoop(){
   }
 }
 String jsq(const String& s){ String o = "\""; for(unsigned int i = 0; i < s.length(); i++){ char c = s.charAt(i); if(c == '"' || c == '\\') o += '\\'; if(c >= 32) o += c; } return o + "\""; }
+// SHOW CLAUDE: one page with everything the box knows about itself, and a big button that copies it
+void handleReport(){
+  web.sendHeader("Access-Control-Allow-Origin", "*");
+  String r = "MARY'S MAGIC BOX " + String(BOX_VER) + "\n";
+  unsigned long up = millis() / 1000;
+  r += "ON FOR: " + String(up / 3600) + "h " + String((up / 60) % 60) + "m\n";
+  r += "WIFI: ";
+  if(WiFi.status() == WL_CONNECTED) r += ssid + "  bars " + String(wifiBars()) + "  ip " + WiFi.localIP().toString() + "  (" + String(WiFi.RSSI()) + ")";
+  else r += apUp ? "setup page is open, not joined" : "NOT JOINED";
+  r += "\n2nd WIFI SAVED: " + (ssid2.length() ? ssid2 : String("none")) + "\n";
+  r += "MEMORY: " + String(ESP.getFreeHeap() / 1024) + "k free";
+  if(psramFound()) r += ", big memory " + String(ESP.getFreePsram() / 1024) + "k free";
+  r += "\nVOICE: " + String(listenOn ? "listening" : "off") + ", knows " + String(vcGot) + " of " + String(VC_ORD) + " orders\n";
+  r += "TAUGHT: ";
+  for(int o = 0; o < VC_ORD; o++){ r += String(VC_NAME[o]) + " " + String(vcSaid(o)); if(o < VC_ORD - 1) r += ", "; }
+  r += "\nSWITCHES: ";
+  for(int i = 0; i < NREL; i++){ r += nm[i] + " " + String(on[i] ? "ON" : "off"); if(i < NREL - 1) r += ", "; }
+  r += "\nMUSIC: " + String(musicOn ? "on" : "off") + ", station " + songName(sdCur) + "\n";
+  r += "KEY: " + String(gKey.length() ? "saved" : "NOT SAVED") + "   SCREEN SAVER: " + String(asleep ? "asleep" : "awake") + "\n";
+  r += "\nWHAT IT HEARD (newest first):\n";
+  if(!vlogN) r += "  nothing yet\n";
+  for(int i = 0; i < vlogN; i++) r += "  " + vlog[i] + "\n";
+  String h = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>";
+  h += "<style>body{background:#0b1430;color:#dbe7ff;font:15px system-ui;margin:0;padding:14px}";
+  h += "pre{white-space:pre-wrap;background:#05102a;padding:12px;border-radius:10px;font:13px ui-monospace,monospace;color:#9fd0ff}";
+  h += "button{width:100%;padding:20px;font-size:22px;font-weight:700;background:#16a05a;color:#fff;border:0;border-radius:12px;margin:10px 0}</style>";
+  h += "<h2 style='color:#ffd24a;margin:4px 0 10px'>SHOW CLAUDE</h2>";
+  h += "<button onclick='cp()'>COPY IT ALL</button>";
+  h += "<div id=ok style='text-align:center;color:#8cffb0;height:20px'></div>";
+  // the plain-web copy way first, because the phone will not give a page on http the new clipboard
+  h += "<script>function cp(){var t=document.getElementById('r').innerText;var a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity=0;document.body.appendChild(a);a.focus();a.select();a.setSelectionRange(0,999999);var k=false;try{k=document.execCommand('copy')}catch(e){}document.body.removeChild(a);";
+  h += "if(!k&&navigator.clipboard){navigator.clipboard.writeText(t).then(function(){ok2(1)},function(){ok2(0)});return}ok2(k)}";
+  h += "function ok2(k){document.getElementById('ok').textContent=k?'COPIED - now paste it to Claude':'Could not copy - hold your finger on the text and copy it';}</script>";
+  h += "<pre id=r>" + esc(r) + "</pre>";
+  h += "<button onclick='location.reload()' style='background:#2c5ad6'>FRESH LOOK</button>";
+  web.send(200, "text/html", h);
+}
 void handlePeers(){
   web.sendHeader("Access-Control-Allow-Origin", "*");
   if(!lpw.length() || web.arg("k") != lpw){ web.send(403, "application/json", "{}"); return; }
@@ -6977,7 +7029,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.6. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 7.8. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7004,7 +7056,7 @@ void homeTp(bool down, int x, int y, unsigned long now){          // the long pa
 void tpLoop(){
   if(!tpOk || !lcdOn) return;
   unsigned long now = millis();
-  if(now - tpSeen < 30) return;
+  if(now - tpSeen < 12) return;                                   // 7.8: looked at more often, so a tap is never missed and the page glides
   tpSeen = now;
   int x = 0, y = 0; bool down = board == 3 ? tpRead3(x, y) : tpRead(x, y);
   if(board == 3){ static int n3 = 0; if(down){ if(++n3 < 2) down = false; } else n3 = 0; }      // a pressed screen must hold for two looks: no ghost taps
@@ -7118,6 +7170,7 @@ String page(const String& note){
   else h += "<span class=no>not connected</span>";
   h += "<br>Mary's message service: ";
   h += (subOk && httpCode == 200) ? "<span class=ok>connected</span>" : "<span class=no>not connected yet</span>";
+  h += "<div class=card><b>Show Claude</b> <small>everything the box just did, with a COPY button</small><br><a style='color:#7fc4ff;font-size:19px' href='/claude'>open the Show Claude page</a></div>";
   h += "</div><form method=post action=/save><div class=card><b>1. Your Wi-Fi</b> <small>(2.4 GHz)</small><select name=ssid><option value=''>pick it here...</option>";
   if(ssid.length() && wifiList.indexOf("\"" + esc(ssid) + "\"") < 0) h += "<option value=\"" + esc(ssid) + "\" selected>" + esc(ssid) + " (now)</option>";      // the Wi-Fi it uses now is always in the list
   h += wifiList;
@@ -7297,6 +7350,7 @@ void setup(){
   web.on("/touch", HTTP_GET, handleTouch);
   web.on("/hub", HTTP_GET, handleHub);
   web.on("/peers", HTTP_GET, handlePeers);
+  web.on("/claude", HTTP_GET, handleReport);      // SHOW CLAUDE: the whole story of the box on one page
   web.onNotFound(handleOther);
   WiFi.onEvent([](WiFiEvent_t e, WiFiEventInfo_t info){ wReason = info.wifi_sta_disconnected.reason; }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);      // remember WHY Wi-Fi failed
   vcBoot();                                                        // 7.1: the box's own memory (Mary's key, the taught orders)
@@ -7528,7 +7582,7 @@ static float vcBest(const VTpl* t){                                // the closes
   float best = 1e9f;
   for(int g = 0; g < 3; g++){
     if(vcGn[g] < 6) continue;
-    for(int sl = 0; sl < VC_SL; sl++) if(t[sl].n){ float d = vcDist(vcG[g], vcGn[g], t[sl].f, t[sl].n, 95.0f); if(d < best) best = d; }
+    for(int sl = 0; sl < VC_SL; sl++) if(t[sl].n){ float d = vcDist(vcG[g], vcGn[g], t[sl].f, t[sl].n, 95.0f); if(d < best) best = d; delay(1); }      // a breath for the screen between every comparison
   }
   return best;
 }
@@ -7592,9 +7646,12 @@ bool vcMatch(){                                                    // VOICE: the
   int o = vcPick(recLoud() + 3200, recN - 3200, &shown, &almost);  // the first 0.2 second is the tap and its beep: left out
   if(o < 0){                                                       // not sure: say what it nearly heard and how far off it was, so he can just say it again
     cmdMsg = (almost >= 0 && shown < 900 ? String(VC_NAME[almost]) + "? " : String("NOT SURE ")) + "(" + String(shown) + ")";
+    vlogAdd(String("heard something, NOT SURE - nearest ") + (almost >= 0 ? VC_NAME[almost] : "nothing") + " " + String(shown));
     return false;
   }
-  aiCmd = VC_CMD[o]; cmdWhy = 0; cmdMsg = ""; return true;
+  aiCmd = VC_CMD[o]; cmdWhy = 0; cmdMsg = "";
+  vlogAdd(String("DID ") + VC_NAME[o] + "  " + String(shown));
+  return true;
 }
 void vcTeach(){                                                    // TEACH: each order is said twice, and more tries make it better
   int o = teachIdx; teachIdx = -1; aiCmd = ""; cmdWhy = 0;
@@ -7619,6 +7676,7 @@ void vcTeach(){                                                    // TEACH: eac
   vt[put].n = (uint8_t)n; memcpy(vt[put].f, vcNow, (size_t)n * VC_NC); vcSave(put); vcCount();
   int now = vcSaid(o);
   cmdMsg = now < 2 ? String("GOOD. NOW ONCE MORE") : String(VC_NAME[o]) + " OK (" + String(now) + ")";
+  vlogAdd(String("taught ") + VC_NAME[o] + ", now knows it " + String(now) + " times");
 }
 void vcForget(int o){ if(!vt) return; for(int sl = 0; sl < VC_SL; sl++){ vt[o * VC_SL + sl].n = 0; vcSave(o * VC_SL + sl); } vcCount(); }
 int jetList(uint32_t* cand){                                      // where the Jetson may be: the place that answered last time, then its name from the setup page (works on any Wi-Fi), then the gateway (on Doctor Magic the Jetson IS the gateway)
@@ -7894,7 +7952,7 @@ void paintWf(){
 void wfTouch(int x, int y){
   fxNote(1500, 30);
   if(y >= 204){ if(x < 160) wfN = -1; else wfOn = false; return; }
-  if(y >= 34 && wfN > 0){ int i = (y - 34) / 34; if(i < wfN && i < 5){ wfPick = wfName[i]; if(isKnown(wfPick) && knownPass(wfPick).length()){ kbFor = 2; kbText = knownPass(wfPick); kbClose(true); } else kbOpen(2, ""); } }      // a Wi-Fi the box knows: no typing
+  if(y >= 34 && wfN > 0){ int i = (y - 34) / 34; if(i < wfN && i < 5){ wfPick = wfName[i]; if(isKnown(wfPick) && knownPass(wfPick).length()){ kbFor = 2; kbText = knownPass(wfPick); kbClose(true); } else kbOpen(2, pass.length() ? pass : String("Shocker1")); } }      // a Wi-Fi the box knows joins on its own; any other starts with the last password filled in, so it is one tap
 }
 // ---- pictures: JPEG size, and making a picture fit
 bool jpgSize(const uint8_t* b, int len, int& w, int& h){         // reads the width and height; false for "progressive" pictures this chip cannot open
@@ -8345,8 +8403,9 @@ void aiShow(){
   hubWait = false;
   if(aiCmd.length()){
     if(aiCmd == "MUSIC ON"){
-      if(btSel()) sdWant = 0;                                      // the phone Bluetooth station is picked and silent: go to the radio instead
-      musicOn = true; done = realMusic() ? songName(btSel() ? 0 : sdCur) : String("MUSIC ON"); }
+      if(WiFi.status() != WL_CONNECTED) done = "NO WI-FI FOR MUSIC";      // the radio needs the Wi-Fi: say so instead of doing nothing
+      else { if(btSel()) sdWant = 0;                                // the phone Bluetooth station is picked and silent: go to the radio instead
+        musicOn = true; done = realMusic() ? songName(btSel() ? 0 : sdCur) : String("MUSIC ON"); } }
     else if(aiCmd == "MUSIC OFF"){ musicOn = false; done = "MUSIC OFF"; }
     else if(aiCmd == "WEB ON"){ if(!webOn){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; } done = "WEB ON"; }
     else if(aiCmd == "WEB OFF"){ if(webOn){ webOn = false; lcdShown = ""; } done = "WEB OFF"; }
@@ -8537,17 +8596,17 @@ void loop(){
   bzLoop();
   tpLoop();
   if(lcdOn && !asleep && !gameOn && !jetOn && !musicOn && !camOn && !kbOn && !webOn && !wfOn && !phOn && !pcOn && drainWet != 1 && millis() - lastTouch > 180000UL) lcdSleep(true);      // 3 quiet minutes: screen light off
-  web.handleClient();
-  subLoop();
-  hubLoop();
-  peerLoop();
-  drainLoop();
-  webLoop();
-  phLoop();
-  pcLoop();
-  keySync();
-  drainRelay();
-  callLoop();
+  web.handleClient(); tpLoop();                                   // 7.8: the finger is looked at between every job, so the first tap counts and the page glides
+  subLoop();          tpLoop();
+  hubLoop();          tpLoop();
+  peerLoop();         tpLoop();
+  drainLoop();        tpLoop();
+  webLoop();          tpLoop();
+  phLoop();           tpLoop();
+  pcLoop();           tpLoop();
+  keySync();          tpLoop();
+  drainRelay();       tpLoop();
+  callLoop();         tpLoop();
   if(wfOn && wfN < 0 && !kbOn){                                   // the Wi-Fi page: look for Wi-Fi
     if(apUp) WiFi.mode(WIFI_AP_STA);
     else if(WiFi.status() != WL_CONNECTED){ WiFi.disconnect(); delay(200); wifiLostAt = millis(); }      // a try that keeps failing blocks the listening: stop it first
