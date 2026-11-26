@@ -1,4 +1,11 @@
-// AMYRELAY_VERSION 7.1   (the build names the files with this number)
+// AMYRELAY_VERSION 7.2   (the build names the files with this number)
+// 7.2: VOICE listens on and on.  Tap VOICE once and the box keeps listening: "lights on", "music off", "music up",
+//      "next song", "camera on" - one after another, hands free.  Tap it again to stop (or it stops itself after 90 quiet seconds).
+//      TEACH button: tap an order, say it, say it again, and the box knows it.  Said more times, it knows it better.  Mary and
+//      Mr. Terry can teach the same buttons.  Teachings live in the box's own memory and a new flash does not wipe them.
+//      No internet and no Jetson needed for any of this.  CAMERA button: the picture from the other box's camera over the
+//      same Wi-Fi.  The garage is not a spoken order on this box (it needs its relay wired first).
+// 7.1: voice orders worked out on the box itself; Mary's Google key kept where a flash cannot wipe it.
 // 6.0: WEB has sound: while a web page is open (YouTube and the like) the Jetson sends the page's sound and the box plays it.
 // 5.9: Christian music first: Christmas Gospel, Christmas Classics, Christian Radio, Christmas Hits (the SONG button changes it).
 // 5.8: the CALL button opens a CALL page: TALK (hold), TYPE (written messages box to box), CAM (the picture from a phone's camera),
@@ -164,18 +171,25 @@ uint16_t *maryBig = NULL, *maryFace = NULL;
 volatile bool callMode = false, callSent = false, callIn = false; bool nowOn = false; volatile uint16_t callId = 0, callTot = 0, callGot = 0; volatile unsigned long callAt = 0; uint16_t callMine = 0;
 uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bool callUdpOn = false;
 #define CALL_PAY 240
-// 7.1: VOICE ORDERS ON THE BOX ITSELF (no internet, no Jetson).  The box is taught each order by voice, twice; later it compares what it hears with what it was taught.
+// 7.2: VOICE ORDERS ON THE BOX ITSELF (no internet, no Jetson).  Tap VOICE once and it keeps listening: order after order, hands free.
 #define VC_NF 100                                                  // most pieces of 20 ms in one order (2 seconds)
 #define VC_NC 13                                                   // numbers per piece
 #define VC_FFT 512
 #define VC_MEL 22
-#define VC_ORD 6
+#define VC_ORD 9                                                   // how many different orders it can learn
+#define VC_SL 6                                                    // how many times each order can be taught (two people, three tries each)
+#define VC_FMT 2                                                   // 7.2 listens in a new way, so teachings from 7.1 are not used
+#define VC_K 2.5f
+#define VC_LIM0 20.0f
+#define VC_LIM1 26.0f
+#define VC_RAT 1.05f
 typedef int8_t VRow[VC_NC];
 struct VTpl { uint8_t n; int8_t f[VC_NF][VC_NC]; };
 VTpl* vt = NULL; VRow* vcNow = NULL; float *vcRe = NULL, *vcIm = NULL, *vcFt = NULL, *vcMe = NULL, *vcEn = NULL;
-bool vcOk = false, fsOk = false, teachOn = false; volatile int teachIdx = -1; int teachWho = 0; String cmdMsg = "";
-static const char* const VC_NAME[VC_ORD] = {"LIGHTS ON", "LIGHTS OFF", "OPEN GARAGE", "CLOSE GARAGE", "MUSIC ON", "MUSIC OFF"};
-static const char* const VC_CMD[VC_ORD] = {"LIGHT ON", "LIGHT OFF", "GARAGE", "GARAGE", "MUSIC ON", "MUSIC OFF"};
+bool vcOk = false, fsOk = false, teachOn = false; volatile int teachIdx = -1; int teachPg = 0; String cmdMsg = ""; int vcGot = 0;
+volatile bool listenOn = false; unsigned long listenAt = 0;        // VOICE stays on until he taps it again (or 90 seconds with nothing said)
+static const char* const VC_NAME[VC_ORD] = {"LIGHTS ON", "LIGHTS OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAMERA ON", "CAMERA OFF"};
+static const char* const VC_CMD[VC_ORD] = {"LIGHT ON", "LIGHT OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAM ON", "CAM OFF"};
 volatile bool cmdMode = false; volatile int cmdWhy = 0;                                    // 6.8: the VOICE button: one short spoken order, no talking back, so it is quick
 bool prayOn = false; uint32_t prayHz = 0;                        // 6.7: the PRAYER page, and the signal it puts out (in hertz)
 bool callOn = false, pcOn = false; String callMsg = ""; volatile bool callNew = false; char callTxt[208]; uint16_t callSeen[6]; int callSeenK = 0; unsigned long pcAt = 0; WiFiUDP callUdpTxt;
@@ -203,6 +217,9 @@ void beep(int n, unsigned int ms, unsigned int gap);
 void setBuzz(bool v);
 void lcdDraw(bool force);
 void fxNote(int hz, int ms);
+int vcSaid(int o);
+void vcForget(int o);
+void vcCount();
 void sayClip(int k);
 void showMsg(const String& m);
 void announce(int i, bool pulse);
@@ -444,7 +461,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.1"
+#define BOX_VER "7.2"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6468,7 +6485,7 @@ bool nameHas(int i, const char* w){ return nm[i].indexOf(w) >= 0; }
 bool isDoor(int i){ return i < NREL && (nameHas(i, "GARAGE") || nameHas(i, "DOOR") || nameHas(i, "GATE")) && !nameHas(i, "LIGHT"); }      // a door gets one short press
 bool tileBuzz(int i){ return i == NREL - 1 && buzzIs4(); }
 // 6.2: ONE long page.  All the buttons in rows of three; a finger drags the rows up and down (no more MORE and BACK).  pgNo is the row at the top.
-static const uint8_t TL[] = {20, 0, 1, 2, 3, 4, 16, 9, 10, 18, 12, 14, 15, 6, 13, 7, 8, 19, 21};      // 6.9: VOICE is the very first button
+static const uint8_t TL[] = {20, 21, 0, 1, 2, 3, 4, 16, 9, 10, 22, 18, 12, 14, 15, 6, 13, 7, 8, 19};      // 6.9: VOICE is the very first button
 #define TLN ((int)sizeof(TL))
 #define TLROWS ((TLN + 2) / 3)
 int pgY = 0;                                                      // 6.3: how far the long page is slid up, in dots.  It glides with the finger
@@ -6496,20 +6513,20 @@ void drawTile(int slot){
   bool used = tileUsed(id), isOn = tileOn(id), door = id < NREL && isDoor(id);
   uint16_t tint = !used ? rgb(70, 78, 92) : isOn ? rgb(255, 196, 40) : door ? rgb(40, 120, 240) : id == 4 ? rgb(150, 70, 220) : id == 6 ? rgb(20, 170, 150) : id == 7 ? rgb(50, 50, 130)
                 : id == 8 ? rgb(205, 60, 60) : id == 9 ? rgb(150, 70, 220) : id == 10 ? rgb(235, 120, 30) : (id == 5 || id == 11 || id == 17) ? rgb(60, 100, 170)
-                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : id == 18 ? rgb(40, 110, 235) : id == 19 ? rgb(200, 150, 30) : id == 20 ? rgb(20, 160, 90) : id == 21 ? rgb(140, 70, 200) : rgb(14, 34, 84);
+                : id == 12 ? rgb(30, 120, 210) : id == 13 ? rgb(20, 150, 90) : id == 14 ? rgb(200, 90, 160) : id == 15 ? rgb(230, 140, 30) : id == 16 ? rgb(230, 80, 150) : id == 18 ? rgb(40, 110, 235) : id == 19 ? rgb(200, 150, 30) : id == 20 ? (listenOn ? rgb(255, 150, 20) : rgb(20, 160, 90)) : id == 21 ? rgb(140, 70, 200) : id == 22 ? rgb(20, 120, 170) : rgb(14, 34, 84);
   cvGlass(x + 3, y + 7, 97, 77, 14, 0x0000, 150, 1);              // the dark slab underneath: the button stands up off the picture
   cvGlass(x, y, 100, 77, 14, tint, isOn ? 195 : 165, 0);
   const uint16_t* ic = id == 4 ? IC_MUSIC : id == 5 ? IC_MORE : id == 6 ? IC_STAR : id == 7 ? IC_MOON : id == 8 ? IC_PLUG : id == 9 ? IC_MUSIC : id == 10 ? IC_LOUD : id == 11 ? IC_MORE
-                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK : id == 18 ? IC_MUSIC : id == 19 ? IC_STAR : id == 20 ? IC_AI : id == 21 ? IC_AI
+                     : id == 12 ? IC_STAR : id == 13 ? IC_PLUG : id == 14 ? IC_BELL : id == 15 ? IC_CAM : id == 16 ? IC_GIRL : id == 17 ? IC_BACK : id == 18 ? IC_MUSIC : id == 19 ? IC_STAR : id == 20 ? IC_AI : id == 21 ? IC_AI : id == 22 ? IC_CAM
                      : tileBuzz(id) ? IC_BELL : door ? IC_GARAGE : (nameHas(id, "LIGHT") || nameHas(id, "LAMP")) ? IC_LIGHT : IC_PLUG;
   cvSprite(x + 7, y + 6, ic);
   String st = id == 5 ? String(">>") : id == 6 ? String("GO") : id == 7 ? String("Zz") : id == 8 ? String("ALL") : id == 9 ? String(">>") : id == 10 ? String(volSet) : id == 11 ? String(">>")
             : id == 12 ? String("GO") : id == 13 ? (WiFi.status() == WL_CONNECTED ? String(wifiBars()) + "/4" : String("--")) : id == 14 ? String("HOLD")
-            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<") : id == 18 ? String(isOn ? "ON" : "BT") : id == 19 ? String("333K") : id == 20 ? String(cmdMode && aiState == 1 ? "SPEAK" : cmdMode && aiState != 0 ? "WAIT" : "TAP") : id == 21 ? String(vcCount(-1)) + "/6"
+            : id == 15 ? (sdPicN ? String(sdPicN) : String("--")) : id == 16 ? String("AI") : id == 17 ? String("<<") : id == 18 ? String(isOn ? "ON" : "BT") : id == 19 ? String("333K") : id == 20 ? String(cmdMode && aiState == 1 ? "SPEAK" : cmdMode && aiState != 0 ? "WAIT" : "TAP") : id == 21 ? String(vcGot) + "/" + String(VC_ORD) : id == 22 ? String(drainIp.length() ? "READY" : "--")
             : !used ? String("--") : door ? String("TAP") : isOn ? String("ON") : String("OFF");
   cvText(x + 100 - 7 - (int)st.length() * FW, y + 10, st.c_str(), 0xFFFF, 1);
   String name = id == 4 ? String("MUSIC") : id == 5 ? String("MORE") : id == 6 ? String("GAME") : id == 7 ? String("SLEEP") : id == 8 ? String("ALL OFF") : id == 9 ? String("SONG") : id == 10 ? String("LOUD") : id == 11 ? String("MORE")
-              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : id == 18 ? String("PHONE BT") : id == 19 ? String("PRAYER") : id == 20 ? String("VOICE") : id == 21 ? String("TEACH") : nm[id];
+              : id == 12 ? String("WEB") : id == 13 ? String("WI-FI") : id == 14 ? String("CALL") : id == 15 ? String("PHOTOS") : id == 16 ? String("MARY") : id == 17 ? String("BACK") : id == 18 ? String("PHONE BT") : id == 19 ? String("PRAYER") : id == 20 ? String(listenOn ? "TALK NOW" : "VOICE") : id == 21 ? String("TEACH") : id == 22 ? String("CAMERA") : nm[id];
   if(name.length() > 8) name = name.substring(0, 8);
   cvText(x + (100 - (int)name.length() * FW) / 2, y + 47, name.c_str(), 0xFFFF, 1);
 }
@@ -6525,30 +6542,43 @@ void prayStop(){
   int p = prayPin(); prayHz = 0; if(p < 0) return;
   ledcWrite(6, 0); ledcDetachPin(p); pinMode(p, OUTPUT); digitalWrite(p, board == 3 ? HIGH : LOW);      // quiet again (the yellow board's light is off when the pin is high)
 }
-void paintTeach(){                                                 // TEACH: six orders; tap one and say it, twice.  Two people can teach (PERSON 1 and 2)
+void paintTeach(){                                                 // TEACH: tap an order and say it, twice.  More tries make it better.  Mary can teach the same buttons too
   cvGlass(0, 0, LCD_W, 30, 0, rgb(6, 14, 40), 190, 0);
   cvText(8, 3, "TEACH MY VOICE", rgb(255, 220, 90), 1);
-  String st = (msgUntil && (long)(msgUntil - millis()) > 0) ? msgText : (cmdMode && aiState == 1) ? String("SAY IT NOW") : String("Tap one. Say it. Twice.");
-  if(st.length() > 25) st = st.substring(0, 25);
+  String st = (msgUntil && (long)(msgUntil - millis()) > 0) ? msgText : (aiState != 0 ? String("SAY IT NOW") : String("Tap one. Say it. Twice."));
+  if(st.length() > 26) st = st.substring(0, 26);
   cvText((LCD_W - (int)st.length() * FW) / 2, 35, st.c_str(), rgb(140, 255, 170), 1);
-  for(int o = 0; o < VC_ORD; o++){
-    int x = 4 + (o % 2) * 158, y = 58 + (o / 2) * 40;
-    int got = (vt && vt[o * 4 + teachWho * 2].n ? 1 : 0) + (vt && vt[o * 4 + teachWho * 2 + 1].n ? 1 : 0);
-    bool now = cmdMode && aiState == 1 && teachIdx == o;
-    uint16_t col = now ? rgb(255, 170, 30) : got == 2 ? rgb(20, 150, 90) : got == 1 ? rgb(200, 150, 30) : rgb(30, 90, 190);
+  for(int k = 0; k < 6; k++){
+    int o = teachPg * 6 + k; if(o >= VC_ORD) break;
+    int x = 4 + (k % 2) * 158, y = 58 + (k / 2) * 40;
+    int got = vcSaid(o);
+    bool now = aiState != 0 && teachIdx == o;
+    uint16_t col = now ? rgb(255, 170, 30) : got >= 2 ? rgb(20, 150, 90) : got == 1 ? rgb(200, 150, 30) : rgb(30, 90, 190);
     cvGlass(x + 2, y + 3, 154, 36, 8, 0x0000, 140, 1); cvGlass(x, y, 154, 36, 8, col, 190, 0);
-    cvText(x + (154 - (int)strlen(VC_NAME[o]) * FW) / 2, y + 8, VC_NAME[o], 0xFFFF, 1);
+    String nm2 = String(VC_NAME[o]); if(got) nm2 += " " + String(got);
+    cvText(x + (154 - (int)nm2.length() * FW) / 2, y + 8, nm2.c_str(), 0xFFFF, 1);
   }
-  String who = String("PERSON ") + String(teachWho + 1);
-  cvGlass(6, 189, 150, 44, 10, 0x0000, 140, 1); cvGlass(4, 184, 150, 44, 10, rgb(140, 70, 200), 190, 0);
-  cvText(4 + (150 - (int)who.length() * FW) / 2, 195, who.c_str(), 0xFFFF, 1);
-  cvGlass(168, 189, 150, 44, 10, 0x0000, 140, 1); cvGlass(166, 184, 150, 44, 10, rgb(225, 50, 60), 190, 0);
-  cvText(166 + (150 - 4 * FW) / 2, 195, "EXIT", 0xFFFF, 1);
+  const char* b1 = teachPg ? "BACK" : "MORE";
+  cvGlass(6, 189, 100, 44, 10, 0x0000, 140, 1); cvGlass(4, 184, 100, 44, 10, rgb(140, 70, 200), 190, 0);
+  cvText(4 + (100 - (int)strlen(b1) * FW) / 2, 195, b1, 0xFFFF, 1);
+  cvGlass(112, 189, 100, 44, 10, 0x0000, 140, 1); cvGlass(110, 184, 100, 44, 10, rgb(150, 110, 30), 190, 0);
+  cvText(110 + (100 - 6 * FW) / 2, 195, "FORGET", 0xFFFF, 1);
+  cvGlass(218, 189, 98, 44, 10, 0x0000, 140, 1); cvGlass(216, 184, 98, 44, 10, rgb(225, 50, 60), 190, 0);
+  cvText(216 + (98 - 4 * FW) / 2, 195, "EXIT", 0xFFFF, 1);
 }
 void teachTouch(int x, int y){
-  if(y >= 180){ if(aiState != 0) return; fxNote(600, 60); if(x < 160) teachWho ^= 1; else teachOn = false; return; }
+  if(y >= 180){
+    if(aiState != 0) return;
+    fxNote(600, 60);
+    if(x < 108){ teachPg = teachPg ? 0 : 1; if(teachPg * 6 >= VC_ORD) teachPg = 0; }
+    else if(x < 214){ teachIdx = -2; showMsg("NOW TAP AN ORDER TO FORGET"); }      // -2: the next order tapped is forgotten
+    else teachOn = false;
+    return;
+  }
   if(y < 58 || y >= 178 || aiState != 0) return;
-  int o = ((y - 58) / 40) * 2 + (x < 160 ? 0 : 1); if(o < 0 || o >= VC_ORD) return;
+  int k = ((y - 58) / 40) * 2 + (x < 160 ? 0 : 1); int o = teachPg * 6 + k;
+  if(o < 0 || o >= VC_ORD) return;
+  if(teachIdx == -2){ teachIdx = -1; vcForget(o); fxNote(400, 120); showMsg(String("FORGOT ") + VC_NAME[o]); return; }
   fxNote(1500, 30);
   vPlay = false; teachIdx = o; cmdMode = true; recN = 0; hubAns = ""; ansPg = 0; aiRec = true; aiState = 1; msgUntil = 0;
 }
@@ -6617,7 +6647,7 @@ void lcdDraw(bool force){
   if(camOn) return;                                               // the drain picture is on the screen
   if((webOn || phOn || pcOn) && !kbOn) return;                            // a web page or a photo is on the screen
   if(kbOn) key += "|k" + String(kbFor) + String(kbShift ? 1 : 0) + String(kbSym ? 1 : 0) + kbText;
-  if(teachOn){ key += "|t" + String(teachWho) + String((int)aiState) + String((int)teachIdx); for(int i = 0; vt && i < VC_ORD * 4; i++) key += vt[i].n ? "1" : "0"; }
+  if(teachOn){ key += "|t" + String(teachPg) + String((int)aiState) + String((int)teachIdx); for(int i = 0; vt && i < VC_ORD * VC_SL; i++) key += vt[i].n ? "1" : "0"; }
   if(prayOn) key += "|p" + String(prayHz);
   if(callOn) key += "|c" + callMsg + String(aiState) + String(callMode ? 1 : 0) + WiFi.gatewayIP().toString();
   if(wfOn){ key += "|w" + String(wfN) + WiFi.localIP().toString(); for(int i = 0; i < wfN && i < 5; i++) key += wfName[i] + String(barsOf(wfRs[i])); }
@@ -6817,6 +6847,9 @@ void tileTap(int slot){                                            // a finger o
   if(id < 0) return;
   fxNote(1500, 30);
   if(drainTile(id)){ camOn = true; camAt = 0; camOpened = millis(); return; }
+  if(id == 22){                                                    // CAMERA: the picture from the other box (Drain Watch) on the same Wi-Fi
+    if(!drainIp.length()){ showMsg("NO CAMERA BOX FOUND"); return; }
+    camOn = true; camAt = 0; camOpened = millis(); return; }
   if(id == 4){ musicOn = !musicOn; sayClip(musicOn ? 7 : 8); showMsg(musicOn ? (realMusic() ? songName(sdCur) : String("MUSIC ON")) : String("MUSIC OFF")); return; }
   if(id == 18){                                                    // the phone's music by Bluetooth: the phone plays to the Jetson, the Jetson hands it to this box
     if(musicOn && btSel()){ musicOn = false; sdWant = 0; sayClip(8); showMsg("PHONE MUSIC OFF"); return; }
@@ -6824,12 +6857,14 @@ void tileTap(int slot){                                            // a finger o
     sdWant = sdSongN + NRADIO; musicOn = true; showMsg("BLUETOOTH: MARY BOX"); return; }
   if(id == 12){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; return; }
   if(id == 13){ wfOn = true; wfN = -1; return; }                 // -1: look for Wi-Fi right after the screen says so
-  if(id == 20){                                                    // VOICE: tap, say one order ("light on", "garage", "music off", "web on"), and it is done
+  if(id == 20){                                                    // VOICE: one tap and it keeps listening, order after order, until it is tapped again
     if(!recL || !micOk){ showMsg("NO MICROPHONE"); return; }
-    if(vcCount(-1) == 0 && WiFi.status() != WL_CONNECTED){ showMsg("TAP TEACH FIRST"); return; }      // 7.1: taught orders work with nothing else; untaught ones go to the Jetson
-    if(aiState == 0){ vPlay = false; cmdMode = true; recN = 0; hubAns = ""; ansPg = 0; aiRec = true; aiState = 1; showMsg("SPEAK NOW"); }
+    if(listenOn){ listenOn = false; aiRec = false; showMsg("VOICE OFF"); lcdShown = ""; return; }
+    if(!vcGot && WiFi.status() != WL_CONNECTED){ showMsg("TAP TEACH FIRST"); return; }      // taught orders need nothing else; untaught ones go to the Jetson
+    listenOn = true; listenAt = millis();
+    if(aiState == 0){ vPlay = false; cmdMode = true; recN = 0; hubAns = ""; ansPg = 0; aiRec = true; aiState = 1; showMsg("KEEP TALKING"); }
     return; }
-  if(id == 21){ if(!vcOk || !recL || !micOk){ showMsg("NOT ON THIS BOX"); return; } teachOn = true; return; }      // TEACH: teach the box your voice
+  if(id == 21){ if(!vcOk || !recL || !micOk){ showMsg("NOT ON THIS BOX"); return; } listenOn = false; teachOn = true; teachPg = 0; return; }      // TEACH: teach the box your voice
   if(id == 19){ prayOn = true; prayStart(); return; }             // the PRAYER page, with its signal
   if(id == 14){ callOn = true; return; }                          // the CALL page: talk, type, camera
   if(id == 15){ if(!sdPicN){ showMsg("NO PHOTOS ON SD CARD"); return; } phOn = true; phAt = 0; return; }
@@ -6925,7 +6960,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.1. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 7.2. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7355,7 +7390,7 @@ bool aiAnswer1(){                                                 // call 1: hea
   if(!t.length()) t = aiCmd.length() ? String("Okay!") : String("Sorry, I didn't catch that. Please try again.");
   aiText = t; return true;
 }
-// ---- 7.1 voice core start
+// ---- 7.2 voice core start: the box's own ears.  It compares what it hears with what it was taught.
 static float vcCos[VC_NC - 1][VC_MEL]; static float vcWin[400]; static int vcEdge[VC_MEL + 2]; static bool vcReady = false;
 static void vcInit(){
   if(vcReady) return;
@@ -7379,22 +7414,31 @@ static void vcFft(float* re, float* im){                           // 512 points
     }
   }
 }
-// the sound picture of one spoken order (12 MFCC + loudness every 20 ms).  x = 16 kHz sound, n = samples.  Gives back the number of pieces (0 = nothing was said)
-static int vcFeat(const int16_t* x, int n, VRow* out){
+// one guess at where the words start and end, and the sound picture of them (12 numbers plus loudness every 20 ms).  Gives back the number of pieces (0 = nothing was said)
+static int vcFeat2(const int16_t* x, int n, VRow* out, float tm){
   vcInit();
-  int nf = (n - 400) / 320; if(nf < 8) return 0; if(nf > 400) nf = 400;
+  int nf = (n - 400) / 320; if(nf < 8) return 0; if(nf > 900) nf = 900;
   float* en = vcEn; float peak = 0;
   for(int f = 0; f < nf; f++){ const int16_t* p = x + f * 320; float e = 0; for(int i = 0; i < 400; i += 2){ float v = p[i]; e += v * v; } en[f] = e / 200.0f; if(en[f] > peak) peak = en[f]; }
   if(peak < 2500.0f) return 0;                                     // too quiet: nobody spoke
   float q[5] = {1e30f, 1e30f, 1e30f, 1e30f, 1e30f};                // the quiet level: the 5th quietest piece
   for(int f = 0; f < nf; f++){ float e = en[f]; for(int k = 0; k < 5; k++) if(e < q[k]){ float t = q[k]; q[k] = e; e = t; } }
-  float thr = q[4] * 6.0f; if(thr < peak * 0.012f) thr = peak * 0.012f;
-  int a = 0, b = nf - 1;
-  while(a < nf && !(en[a] > thr && a + 1 < nf && en[a + 1] > thr)) a++;
-  while(b > a && !(en[b] > thr && en[b - 1] > thr)) b--;
-  if(a >= nf || b - a < 6) return 0;
+  float thr = q[4] * 6.0f; if(thr < peak * tm) thr = peak * tm;
+  int pk = 0; for(int f = 0; f < nf; f++) if(en[f] > en[pk]) pk = f;      // the loudest moment: the order is around here, not out in the room noise
+  int a = pk, b = pk, gap = 0;
+  for(int f = pk - 1; f >= 0; f--){ if(en[f] > thr){ a = f; gap = 0; } else if(++gap > 10) break; }      // a short gap between two words is still one order
+  gap = 0;
+  for(int f = pk + 1; f < nf; f++){ if(en[f] > thr){ b = f; gap = 0; } else if(++gap > 10) break; }
+  if(b - a < 6) return 0;
   a -= 3; if(a < 0) a = 0; b += 4; if(b > nf - 1) b = nf - 1;      // keep a little before and after (soft sounds like F and S)
-  int m = b - a + 1; if(m > VC_NF) m = VC_NF;
+  int m = b - a + 1;
+  if(m > VC_NF){                                                   // longer than two seconds: keep the loudest two seconds of it
+    float sum = 0, bs; int ba = a;
+    for(int f = a; f < a + VC_NF; f++) sum += en[f];
+    bs = sum;
+    for(int f = a + VC_NF; f <= b; f++){ sum += en[f] - en[f - VC_NF]; if(sum > bs){ bs = sum; ba = f - VC_NF + 1; } }
+    a = ba; m = VC_NF;
+  }
   float* re = vcRe; float* im = vcIm;
   float mean[VC_NC]; for(int k = 0; k < VC_NC; k++) mean[k] = 0;
   float emax = -1e30f, bmax = 0;
@@ -7404,29 +7448,38 @@ static int vcFeat(const int16_t* x, int n, VRow* out){
     for(int i = 400; i < VC_FFT; i++){ re[i] = 0; im[i] = 0; }
     vcFft(re, im);
     for(int j = 0; j < VC_MEL; j++){
-      int l = vcEdge[j], c = vcEdge[j + 1], r = vcEdge[j + 2]; float s = 0;
-      for(int k = l; k <= r && k < VC_FFT / 2; k++){ float w = k <= c ? (c > l ? (float)(k - l) / (c - l) : 1.0f) : (r > c ? (float)(r - k) / (r - c) : 1.0f); s += w * (re[k] * re[k] + im[k] * im[k]); }
-      vcMe[f * VC_MEL + j] = s; if(s > bmax) bmax = s;
+      int l = vcEdge[j], c = vcEdge[j + 1], r = vcEdge[j + 2]; float sp = 0;
+      for(int k = l; k <= r && k < VC_FFT / 2; k++){ float w = k <= c ? (c > l ? (float)(k - l) / (c - l) : 1.0f) : (r > c ? (float)(r - k) / (r - c) : 1.0f); sp += w * (re[k] * re[k] + im[k] * im[k]); }
+      vcMe[f * VC_MEL + j] = sp; if(sp > bmax) bmax = sp;
     }
   }
-  float fl = bmax * 0.003f + 1000.0f;                              // sounds far under the loudest one count as silence: room noise changes the picture less
+  float fl = bmax * 0.003f + 1000.0f;                              // sounds far under the loudest one count as silence
+  float nz[VC_MEL];                                                // the room's own hum in each band, from the quietest moments: taken away, so a noisy room sounds more like a quiet one
+  for(int j = 0; j < VC_MEL; j++){
+    float lo1 = 1e30f, lo2 = 1e30f, lo3 = 1e30f;
+    for(int f = 0; f < m; f++){ float v = vcMe[f * VC_MEL + j]; if(v < lo1){ lo3 = lo2; lo2 = lo1; lo1 = v; } else if(v < lo2){ lo3 = lo2; lo2 = v; } else if(v < lo3) lo3 = v; }
+    nz[j] = (lo1 + lo2 + lo3) / 3.0f;
+  }
   for(int f = 0; f < m; f++){
     float mel[VC_MEL], tot = 0;
-    for(int j = 0; j < VC_MEL; j++){ tot += vcMe[f * VC_MEL + j]; mel[j] = logf(vcMe[f * VC_MEL + j] + fl); }
-    for(int k = 1; k < VC_NC; k++){ float s = 0; for(int j = 0; j < VC_MEL; j++) s += mel[j] * vcCos[k - 1][j]; vcFt[f * VC_NC + k] = s; mean[k] += s; }
+    for(int j = 0; j < VC_MEL; j++){ float v = vcMe[f * VC_MEL + j] - nz[j] * 1.2f; if(v < 0) v = 0; tot += v; mel[j] = logf(v + fl); }
+    for(int k = 1; k < VC_NC; k++){ float sp = 0; for(int j = 0; j < VC_MEL; j++) sp += mel[j] * vcCos[k - 1][j]; vcFt[f * VC_NC + k] = sp; mean[k] += sp; }
     vcFt[f * VC_NC] = logf(tot + fl * VC_MEL); if(vcFt[f * VC_NC] > emax) emax = vcFt[f * VC_NC];
   }
   for(int k = 1; k < VC_NC; k++) mean[k] /= m;
+  float sd[VC_NC];                                                 // every try is stretched to the same spread, so talking louder or softer matters much less
+  for(int k = 1; k < VC_NC; k++){ float s2 = 0; for(int f = 0; f < m; f++){ float d = vcFt[f * VC_NC + k] - mean[k]; s2 += d * d; } sd[k] = sqrtf(s2 / m) + 0.02f; }
   for(int f = 0; f < m; f++){
     float v = (vcFt[f * VC_NC] - emax) * 6.0f; out[f][0] = (int8_t)(v < -120 ? -120 : v);              // loudness under the loudest piece
-    for(int k = 1; k < VC_NC; k++){ v = (vcFt[f * VC_NC + k] - mean[k]) * 5.0f / (1.0f + 0.12f * k); out[f][k] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
+    for(int k = 1; k < VC_NC; k++){ v = (vcFt[f * VC_NC + k] - mean[k]) / sd[k] * 26.0f / (1.0f + 0.10f * k); out[f][k] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
   }
   return m;
 }
+static int vcFeat(const int16_t* x, int n, VRow* out){ return vcFeat2(x, n, out, 0.02f); }
 // how far apart two sound pictures are (small = the same words).  Speaking faster or slower is allowed for.
-static float vcDist(const VRow* a, int na, const VRow* b, int nb){
+static float vcDist(const VRow* a, int na, const VRow* b, int nb, float stop = 1e9f){
   if(na < 6 || nb < 6) return 1e9f;
-  if(na > nb * 2 || nb > na * 2) return 1e9f;                      // one is twice as long as the other: not the same words
+  if(na * 2 > nb * 5 || nb * 2 > na * 5) return 1e9f;              // one is more than twice as long as the other: not the same words
   static float prev[VC_NF + 1], cur[VC_NF + 1];
   int band = (na > nb ? na : nb) / 3 + 3;
   for(int j = 0; j <= nb; j++) prev[j] = 1e30f;
@@ -7441,74 +7494,106 @@ static float vcDist(const VRow* a, int na, const VRow* b, int nb){
       cur[j] = best + sqrtf((float)d);
     }
     for(int j = j1 + 1; j <= nb; j++) cur[j] = 1e30f;
+    float row = 1e30f; for(int j = j0; j <= j1; j++) if(cur[j] < row) row = cur[j];
+    if(row > stop * (na + nb)) return 1e9f;                        // already further away than anything worth looking at: give up early and save time
     for(int j = 0; j <= nb; j++) prev[j] = cur[j];
   }
   return prev[nb] / (na + nb);
 }
-// which taught order was just said.  -1 = not sure (then nothing is done).  lim and ratio are how sure it has to be
-static int vcPick(const VRow* u, int n){
+// three guesses at where the words start and end, because room noise moves the edges.  Worked out once, then every order is compared against all three
+VRow* vcG[3] = {NULL, NULL, NULL}; int vcGn[3] = {0, 0, 0};
+static void vcGuess(const int16_t* x, int n){
+  static const float TM[3] = {0.02f, 0.06f, 0.012f};
+  for(int g = 0; g < 3; g++) vcGn[g] = vcG[g] ? vcFeat2(x, n, vcG[g], TM[g]) : 0;
+}
+static float vcBest(const VTpl* t){                                // the closest teaching of this one order
+  float best = 1e9f;
+  for(int g = 0; g < 3; g++){
+    if(vcGn[g] < 6) continue;
+    for(int sl = 0; sl < VC_SL; sl++) if(t[sl].n){ float d = vcDist(vcG[g], vcGn[g], t[sl].f, t[sl].n, 45.0f); if(d < best) best = d; }
+  }
+  return best;
+}
+// which taught order was just said.  -1 = not sure, and then nothing is done
+static int vcPick(const int16_t* x, int n, int* shown){
   float per[VC_ORD]; float d1 = 1e9f, d2 = 1e9f; int b = -1;
-  for(int o = 0; o < VC_ORD; o++){ per[o] = 1e9f; for(int s = 0; s < 4; s++){ VTpl* t = &vt[o * 4 + s]; if(t->n){ float d = vcDist(u, n, t->f, t->n); if(d < per[o]) per[o] = d; } } if(per[o] < d1){ d1 = per[o]; b = o; } }
-  if(b < 0) return -1;
-  for(int o = 0; o < VC_ORD; o++) if(o != b && strcmp(VC_CMD[o], VC_CMD[b]) && per[o] < d2) d2 = per[o];      // the nearest order that would do something else
-  float intra = 1e9f;                                              // how alike the two teachings of this order were: that sets how close is close enough
-  for(int w = 0; w < 2; w++){ VTpl* p = &vt[b * 4 + w * 2]; VTpl* r = &vt[b * 4 + w * 2 + 1]; if(p->n && r->n){ float d = vcDist(p->f, p->n, r->f, r->n); if(d < intra) intra = d; } }
-  float lim = intra > 1e8f ? 11.0f : intra * 2.0f; if(lim < 10.0f) lim = 10.0f; if(lim > 16.0f) lim = 16.0f;
-  bool door = !strcmp(VC_CMD[b], "GARAGE");
-  if(d1 < lim && d2 / d1 > (door ? 1.30f : 1.20f)) return b;      // the garage door has to be surer
+  vcGuess(x, n);
+  for(int o = 0; o < VC_ORD; o++){ per[o] = vcBest(&vt[o * VC_SL]); if(per[o] < d1){ d1 = per[o]; b = o; } }
+  if(shown) *shown = d1 > 998.0f ? 999 : (int)(d1 + 0.5f);
+  if(b < 0 || d1 > 998.0f) return -1;
+  for(int o = 0; o < VC_ORD; o++) if(o != b && per[o] < d2) d2 = per[o];      // the next nearest order
+  float intra = 1e9f;                                              // how alike his own teachings were: that sets how close is close enough
+  for(int i = 0; i < VC_SL; i++) for(int j = i + 1; j < VC_SL; j++){ VTpl* p = &vt[b * VC_SL + i]; VTpl* r = &vt[b * VC_SL + j]; if(p->n && r->n){ float d = vcDist(p->f, p->n, r->f, r->n, 45.0f); if(d < intra) intra = d; } }
+  float lim = intra > 1e8f ? VC_LIM0 : intra * VC_K; if(lim < VC_LIM0) lim = VC_LIM0; if(lim > VC_LIM1) lim = VC_LIM1;
+  if(d1 < lim && (d2 > 998.0f || d2 / d1 > VC_RAT)) return b;
   return -1;
 }
-// ---- 7.1 voice core end
+// ---- 7.2 voice core end
 void fsKeySave(const String& k){ if(!fsOk || k.length() < 20) return; File f = LittleFS.open("/gk.txt", "w"); if(f){ f.print(k); f.close(); } }
-void vcSave(int i){                                                // one teaching, kept in the box's own memory (a new flash does not wipe it)
+void vcSave(int i){                                                // one teaching, kept in a part of the box a new flash does not wipe
   if(!fsOk) return;
-  char nm2[12]; snprintf(nm2, sizeof(nm2), "/v%02d.bin", i);
+  char nm2[14]; snprintf(nm2, sizeof(nm2), "/t%02d.bin", i);
   if(!vt[i].n){ if(LittleFS.exists(nm2)) LittleFS.remove(nm2); return; }
-  File f = LittleFS.open(nm2, "w"); if(f){ f.write((const uint8_t*)&vt[i], 1 + (size_t)vt[i].n * VC_NC); f.close(); }
+  File f = LittleFS.open(nm2, "w"); if(f){ uint8_t v = VC_FMT; f.write(&v, 1); f.write((const uint8_t*)&vt[i], 1 + (size_t)vt[i].n * VC_NC); f.close(); }
 }
-void vcBoot(){                                                     // the box's own memory: Mary's key and the taught orders live past a flash
+void vcBoot(){                                                     // Mary's key and the taught orders live past a flash
   fsOk = LittleFS.begin(true);
   if(fsOk){
     if(!gKey.length()){ if(LittleFS.exists("/gk.txt")){ File f = LittleFS.open("/gk.txt", "r"); if(f){ String k = f.readString(); f.close(); k.trim(); if(k.length() > 20 && k.length() < 120){ gKey = k; prefs.putString("gk", k); } } } }
     else fsKeySave(gKey);
   }
-  if(!psramFound()) return;                                        // the voice teaching needs the big memory (black box)
-  vt = (VTpl*)ps_malloc(sizeof(VTpl) * VC_ORD * 4); vcNow = (VRow*)ps_malloc(sizeof(VRow) * VC_NF);
-  vcRe = (float*)ps_malloc(VC_FFT * 4); vcIm = (float*)ps_malloc(VC_FFT * 4); vcFt = (float*)ps_malloc(VC_NF * VC_NC * 4); vcMe = (float*)ps_malloc(VC_NF * VC_MEL * 4); vcEn = (float*)ps_malloc(400 * 4);
-  if(!vt || !vcNow || !vcRe || !vcIm || !vcFt || !vcMe || !vcEn) return;
-  memset(vt, 0, sizeof(VTpl) * VC_ORD * 4);
-  if(fsOk) for(int i = 0; i < VC_ORD * 4; i++){
-    char nm2[12]; snprintf(nm2, sizeof(nm2), "/v%02d.bin", i);
+  if(!psramFound()) return;                                        // the voice teaching needs the big memory (the black box has it)
+  vt = (VTpl*)ps_malloc(sizeof(VTpl) * VC_ORD * VC_SL); vcNow = (VRow*)ps_malloc(sizeof(VRow) * VC_NF);
+  for(int g = 0; g < 3; g++) vcG[g] = (VRow*)ps_malloc(sizeof(VRow) * VC_NF);
+  vcRe = (float*)ps_malloc(VC_FFT * 4); vcIm = (float*)ps_malloc(VC_FFT * 4); vcFt = (float*)ps_malloc(VC_NF * VC_NC * 4); vcMe = (float*)ps_malloc(VC_NF * VC_MEL * 4); vcEn = (float*)ps_malloc(900 * 4);
+  if(!vt || !vcNow || !vcRe || !vcIm || !vcFt || !vcMe || !vcEn || !vcG[0] || !vcG[1] || !vcG[2]) return;
+  memset(vt, 0, sizeof(VTpl) * VC_ORD * VC_SL);
+  if(fsOk) for(int i = 0; i < VC_ORD * VC_SL; i++){
+    char nm2[14]; snprintf(nm2, sizeof(nm2), "/t%02d.bin", i);
     if(!LittleFS.exists(nm2)) continue;
     File f = LittleFS.open(nm2, "r"); if(!f) continue;
-    int sz = f.size(); if(sz > 1 && sz <= (int)sizeof(VTpl)){ f.read((uint8_t*)&vt[i], sz); if(vt[i].n > VC_NF || 1 + vt[i].n * VC_NC != sz) vt[i].n = 0; }
+    int sz = f.size(); uint8_t v = 0; f.read(&v, 1);
+    if(v == VC_FMT && sz > 2 && sz <= (int)sizeof(VTpl) + 1){ f.read((uint8_t*)&vt[i], sz - 1); if(vt[i].n > VC_NF || 2 + vt[i].n * VC_NC != sz) vt[i].n = 0; }
     f.close();
   }
   vcOk = true;
+  vcCount();
 }
-int vcCount(int who){ int c = 0; if(!vcOk) return 0; for(int o = 0; o < VC_ORD; o++){ if(who < 0){ bool any = false; for(int s = 0; s < 4; s++) if(vt[o * 4 + s].n) any = true; if(any) c++; } else if(vt[o * 4 + who * 2].n && vt[o * 4 + who * 2 + 1].n) c++; } return c; }
+void vcCount(){ vcGot = 0; if(!vcOk && !vt) return; for(int o = 0; o < VC_ORD; o++){ int c = 0; for(int sl = 0; sl < VC_SL; sl++) if(vt[o * VC_SL + sl].n) c++; if(c >= 2) vcGot++; } }
+int vcSaid(int o){ int c = 0; if(!vt) return 0; for(int sl = 0; sl < VC_SL; sl++) if(vt[o * VC_SL + sl].n) c++; return c; }
 int16_t* recLoud(){ int16_t* use = recL; long eL = 0, eR = 0; for(int i = 0; i < recN; i += 4){ eL += abs(recL[i]); eR += abs(recR[i]); } if(eR > eL) use = recR; return use; }
-bool vcMatch(){                                                    // VOICE: try the box's own ears first.  true = an order was understood right here
-  if(!vcOk || vcCount(-1) == 0) return false;
-  int n = recN > 12000 ? vcFeat(recLoud() + 3200, recN - 3200, vcNow) : 0;      // the first 0.2 second is the tap and its beep: left out if(n < 6) return false;
-  int o = vcPick(vcNow, n); if(o < 0) return false;
-  aiCmd = VC_CMD[o]; cmdWhy = 0; return true;
+bool vcMatch(){                                                    // VOICE: the box's own ears.  true = an order was understood right here
+  if(!vcOk || !vcGot || recN < 12000) return false;
+  int shown = 999;
+  int o = vcPick(recLoud() + 3200, recN - 3200, &shown);           // the first 0.2 second is the tap and its beep: left out
+  if(o < 0){ cmdMsg = String("NOT SURE (") + String(shown) + ")"; return false; }      // the number tells Moto how close it was
+  aiCmd = VC_CMD[o]; cmdWhy = 0; cmdMsg = ""; return true;
 }
-void vcTeach(){                                                    // TEACH: each order is said twice; the two have to sound alike
+void vcTeach(){                                                    // TEACH: each order is said twice, and more tries make it better
   int o = teachIdx; teachIdx = -1; aiCmd = ""; cmdWhy = 0;
   if(!vcOk || o < 0 || o >= VC_ORD){ cmdMsg = "NOT ON THIS BOX"; return; }
-  int n = recN > 12000 ? vcFeat(recLoud() + 3200, recN - 3200, vcNow) : 0;      // the first 0.2 second is the tap and its beep: left out
+  int n = recN > 12000 ? vcFeat(recLoud() + 3200, recN - 3200, vcNow) : 0;
   if(n < 8){ cmdMsg = "DID NOT HEAR YOU"; return; }
-  int base = o * 4 + teachWho * 2; VTpl* a = &vt[base]; VTpl* b = &vt[base + 1];
-  if(!a->n || b->n){                                               // the first of the two (or starting this order over)
-    a->n = (uint8_t)n; memcpy(a->f, vcNow, (size_t)n * VC_NC); b->n = 0; vcSave(base); vcSave(base + 1);
-    cmdMsg = "GOOD. NOW ONCE MORE";
-  } else {
-    float d = vcDist(vcNow, n, a->f, a->n);
-    if(d > 13.0f){ a->n = 0; vcSave(base); cmdMsg = "NOT ALIKE. START OVER"; }
-    else { b->n = (uint8_t)n; memcpy(b->f, vcNow, (size_t)n * VC_NC); vcSave(base + 1); cmdMsg = String("LEARNED ") + VC_NAME[o]; }
-  }
+  int said = vcSaid(o), put = -1;
+  if(said >= 2){                                                   // already learned: a new try has to sound like the others, then it is kept as well
+    float far = 0; int worst = 0;
+    for(int sl = 0; sl < VC_SL; sl++){ if(!vt[o * VC_SL + sl].n){ put = o * VC_SL + sl; break; }
+      float d = vcDist(vcNow, n, vt[o * VC_SL + sl].f, vt[o * VC_SL + sl].n); if(d > far){ far = d; worst = o * VC_SL + sl; } }
+    if(put < 0) put = worst;                                       // all full: the one least like this voice makes room
+  } else if(said == 1){
+    float d = 1e9f;
+    for(int sl = 0; sl < VC_SL; sl++) if(vt[o * VC_SL + sl].n) d = vcDist(vcNow, n, vt[o * VC_SL + sl].f, vt[o * VC_SL + sl].n);
+    if(d > 26.0f){ for(int sl = 0; sl < VC_SL; sl++) if(vt[o * VC_SL + sl].n){ vt[o * VC_SL + sl].n = 0; vcSave(o * VC_SL + sl); }
+      vt[o * VC_SL].n = (uint8_t)n; memcpy(vt[o * VC_SL].f, vcNow, (size_t)n * VC_NC); vcSave(o * VC_SL); vcCount();
+      cmdMsg = "NOT ALIKE. SAY IT AGAIN"; return; }
+    put = -1; for(int sl = 0; sl < VC_SL; sl++) if(!vt[o * VC_SL + sl].n){ put = o * VC_SL + sl; break; }
+  } else { for(int sl = 0; sl < VC_SL; sl++) if(!vt[o * VC_SL + sl].n){ put = o * VC_SL + sl; break; } }
+  if(put < 0) put = o * VC_SL;
+  vt[put].n = (uint8_t)n; memcpy(vt[put].f, vcNow, (size_t)n * VC_NC); vcSave(put); vcCount();
+  int now = vcSaid(o);
+  cmdMsg = now < 2 ? String("GOOD. NOW ONCE MORE") : String(VC_NAME[o]) + " OK (" + String(now) + ")";
 }
+void vcForget(int o){ if(!vt) return; for(int sl = 0; sl < VC_SL; sl++){ vt[o * VC_SL + sl].n = 0; vcSave(o * VC_SL + sl); } vcCount(); }
 int jetList(uint32_t* cand){                                      // where the Jetson may be: the place that answered last time, then its name from the setup page (works on any Wi-Fi), then the gateway (on Doctor Magic the Jetson IS the gateway)
   int nc = 0;
   if((uint32_t)webIp) cand[nc++] = (uint32_t)webIp;
@@ -7572,27 +7657,38 @@ void aiVoice(){                                                   // call 2: the
 void aiTask(void* arg){
   for(;;){
     if(aiState == 1){                                             // listening while the finger is on TALK (8 seconds at most)
-      static int16_t fr[512]; size_t got = 0; unsigned long t0 = millis();
-      i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 20);              // throw away the old sound first
-      long lvS = 0, nf = 1000000; bool spoke = false; unsigned long lastSp = 0;
-      while(aiRec && recN < 16000 * 8 && millis() - t0 < (cmdMode ? 3500UL : 8000UL)){
-        if(i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 100) == ESP_OK){
-          int n = got / 4;
-          if(cmdMode && n > 0){                                    // VOICE button: nobody holds a button, so stop by itself half a second after the talking stops
-            long e = 0; for(int i = 0; i < n; i++) e += abs(fr[2 * i]) + abs(fr[2 * i + 1]);
-            lvS = (lvS * 3 + e / (2 * n)) / 4;
-            unsigned long el = millis() - t0;
-            if(el > 250){
-              if(lvS < nf) nf = lvS;
-              if(lvS > nf * 3 + 80){ spoke = true; lastSp = millis(); }
-              if(spoke && el > 900 && millis() - lastSp > 550) aiRec = false;
+      static int16_t fr[512]; size_t got = 0;
+      for(int fl = 0; fl < 60; fl++){ got = 0; if(i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 8) != ESP_OK || got == 0) break; }      // throw away every scrap of old sound, so one order is never heard twice
+      bool spoke = false;
+      while(true){                                                 // while VOICE is on this goes round and round, so no word is ever missed between orders
+        unsigned long t0 = millis(), lastSp = 0;
+        long lvS = 0, nf = 1000000;
+        spoke = false; recN = 0;
+        while(aiRec && recN < 16000 * 8 && millis() - t0 < (cmdMode ? 3500UL : 8000UL)){
+          if(i2s_read(I2S_NUM_0, fr, sizeof(fr), &got, 100) == ESP_OK){
+            int n = got / 4;
+            if(cmdMode && n > 0){                                  // VOICE: nobody holds a button, so it stops by itself half a second after the talking stops
+              long e = 0; for(int i = 0; i < n; i++) e += abs(fr[2 * i]) + abs(fr[2 * i + 1]);
+              lvS = (lvS * 3 + e / (2 * n)) / 4;
+              unsigned long el = millis() - t0;
+              if(el > 250){
+                if(lvS < nf) nf = lvS;
+                if(lvS > nf * 3 + 80){ spoke = true; lastSp = millis(); }
+                if(spoke && el > 900 && millis() - lastSp > 550) aiRec = false;
+              }
             }
+            for(int i = 0; i < n && recN < 16000 * 8; i++){ int a = fr[2 * i] * 4, b = fr[2 * i + 1] * 4;
+              recL[recN] = (int16_t)(a > 32000 ? 32000 : a < -32000 ? -32000 : a); recR[recN] = (int16_t)(b > 32000 ? 32000 : b < -32000 ? -32000 : b); recN++; }
           }
-          for(int i = 0; i < n && recN < 16000 * 8; i++){ int a = fr[2 * i] * 4, b = fr[2 * i + 1] * 4;
-            recL[recN] = (int16_t)(a > 32000 ? 32000 : a < -32000 ? -32000 : a); recR[recN] = (int16_t)(b > 32000 ? 32000 : b < -32000 ? -32000 : b); recN++; }
         }
+        if(cmdMode && listenOn && teachIdx < 0 && !spoke && aiRec){ // nothing was said: carry straight on listening, with no gap at all
+          if(millis() - listenAt > 90000UL){ listenOn = false; recN = 0; break; }      // a minute and a half of quiet: VOICE switches itself off
+          continue;
+        }
+        break;
       }
       aiRec = false;
+      if(cmdMode && !spoke) recN = 0;                              // nobody said anything: nothing to work out, and nothing on the screen
       if(callMode){ if(recN >= 4800) callSend(); callMode = false; aiState = 0; continue; }      // CALL: off to the other boxes
       if(recN < 6400){ aiText = "Hold the TALK button the whole time you speak."; aiCmd = ""; cmdWhy = 0; vN = 0; aiState = 3; continue; }      // under 0.4 seconds
       aiState = 2;
@@ -7601,7 +7697,7 @@ void aiTask(void* arg){
       if(cmdMode){                                                 // VOICE and TEACH: the box's own ears first; the Jetson only when the box is not sure
         vN = 0; txtDone = false; cmdMsg = "";
         if(teachIdx >= 0) vcTeach();
-        else if(!vcMatch()){ if(WiFi.status() == WL_CONNECTED) cmdLocal(); else { aiCmd = ""; cmdWhy = 3; } }
+        else if(!vcMatch()){ if(!vcGot && WiFi.status() == WL_CONNECTED) cmdLocal(); else { aiCmd = ""; if(!vcGot) cmdWhy = 3; } }      // nothing taught yet: the Jetson can try.  Taught orders stay on the box, which is far faster
         aiState = 3; delay(20); continue;
       }
       if(WiFi.status() != WL_CONNECTED){ aiText = "Mary needs the Wi-Fi to talk."; aiCmd = ""; cmdWhy = 1; vN = 0; aiState = 3; continue; }
@@ -8209,6 +8305,16 @@ void aiShow(){
     else if(aiCmd == "MUSIC OFF"){ musicOn = false; done = "MUSIC OFF"; }
     else if(aiCmd == "WEB ON"){ if(!webOn){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; } done = "WEB ON"; }
     else if(aiCmd == "WEB OFF"){ if(webOn){ webOn = false; lcdShown = ""; } done = "WEB OFF"; }
+    else if(aiCmd == "MUSIC UP" || aiCmd == "MUSIC DOWN"){         // louder or quieter
+      int v = volSet + (aiCmd == "MUSIC UP" ? 1 : -1); if(v < 1) v = 1; if(v > 3) v = 3;
+      volSet = v; if(spk && board == 2) esVol(); prefs.putInt("vo", volSet); done = String("LOUD ") + String(volSet); }
+    else if(aiCmd == "NEXT SONG"){                                 // the next song or station
+      if(realMusic()){ int k = btSel() ? 0 : (sdCur + 1) % (sdSongN + NRADIO); sdWant = k; musicOn = true; done = songName(k); }
+      else { int k = (song + 1) % 4; songWant = k; musicOn = true; done = SONG_NAME[k]; } }
+    else if(aiCmd == "CAM ON"){                                    // the picture from the other box's camera
+      if(!drainIp.length()) done = "NO CAMERA BOX";
+      else { camOn = true; camAt = 0; camOpened = millis(); done = "CAMERA ON"; } }
+    else if(aiCmd == "CAM OFF"){ if(camOn){ camOn = false; lcdShown = ""; lcdDraw(true); } done = "CAMERA OFF"; }
     else for(int i = 0; i < NREL; i++){
       if(pins[i] < 0) continue;
       bool light = nameHas(i, "LIGHT") || nameHas(i, "LAMP");
@@ -8218,11 +8324,13 @@ void aiShow(){
     }
     aiCmd = "";
   }
-  if(quick){                                                       // VOICE button: a beep and the order at the bottom of the screen
+  if(quick){                                                       // VOICE and TEACH: a beep and a few words at the bottom of the screen
     if(teachIdx >= 0){ teachIdx = -1; cmdMsg = "DID NOT HEAR YOU"; }
-    if(cmdMsg.length()){ fxNote(cmdMsg.startsWith("LEARNED") || cmdMsg.startsWith("GOOD") ? 1900 : 500, 80); showMsg(cmdMsg); cmdMsg = ""; }
-    else if(done.length()){ fxNote(1900, 60); showMsg(done); }
-    else { fxNote(500, 120); showMsg(vcCount(-1) > 0 ? "DID NOT CATCH IT" : cmdWhy == 1 ? "JETSON NOT ANSWERING" : cmdWhy == 2 ? "JETSON VOICE NOT READY" : "DID NOT CATCH IT"); }
+    if(done.length()){ fxNote(1900, 60); showMsg(done); listenAt = millis(); }      // it did something: keep listening a while longer
+    else if(cmdMsg.length()){ if(!(listenOn && cmdMsg.startsWith("NOT SURE"))) fxNote(cmdMsg.indexOf(" OK") > 0 || cmdMsg.startsWith("GOOD") ? 1900 : 500, 80); showMsg(cmdMsg); }
+    else if(!vcGot) showMsg(cmdWhy == 1 ? "JETSON NOT ANSWERING" : cmdWhy == 2 ? "JETSON VOICE NOT READY" : "TAP TEACH FIRST");
+    else if(!listenOn) showMsg("DID NOT CATCH IT");
+    cmdMsg = "";
     lcdShown = "";
   }
   if(asleep) lcdSleep(false);
@@ -8408,6 +8516,10 @@ void loop(){
     txtDone = false;
     if(vN > 0){ vPos = 0; vPlay = true; }
     aiCmd = ""; aiState = 0; lastTouch = millis(); if(asleep) lcdSleep(false);
+    if(listenOn){                                                  // VOICE is on: listen again right away, so he can give one order after another
+      if(millis() - listenAt > 90000UL){ listenOn = false; showMsg("VOICE OFF"); lcdShown = ""; }      // a minute and a half with nothing said: it switches itself off
+      else { vPlay = false; cmdMode = true; recN = 0; aiRec = true; aiState = 1; }
+    }
   }
   if(needReport && WiFi.status() == WL_CONNECTED && goodCode(code)){
     needReport = false;
