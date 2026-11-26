@@ -1,4 +1,8 @@
-// AMYRELAY_VERSION 7.2   (the build names the files with this number)
+// AMYRELAY_VERSION 7.3   (the build names the files with this number)
+// 7.3: the music no longer goes quiet while VOICE is listening (the music now gets the machine before the listening does),
+//      and the box ducks the music the moment you start talking, so it hears you and not itself.  An order a little further
+//      from how you taught it is taken now, as long as it is plainly that one and not another.  Every order the box is sure
+//      about is kept as one more teaching, so it knows your voice better every day.
 // 7.2: VOICE listens on and on.  Tap VOICE once and the box keeps listening: "lights on", "music off", "music up",
 //      "next song", "camera on" - one after another, hands free.  Tap it again to stop (or it stops itself after 90 quiet seconds).
 //      TEACH button: tap an order, say it, say it again, and the box knows it.  Said more times, it knows it better.  Mary and
@@ -180,13 +184,14 @@ uint8_t* callBuf = NULL; uint8_t callMap[300]; WiFiUDP callUdpIn, callUdpOut; bo
 #define VC_SL 6                                                    // how many times each order can be taught (two people, three tries each)
 #define VC_FMT 2                                                   // 7.2 listens in a new way, so teachings from 7.1 are not used
 #define VC_K 2.5f
-#define VC_LIM0 20.0f
-#define VC_LIM1 26.0f
+#define VC_LIM0 22.0f
+#define VC_LIM1 45.0f
 #define VC_RAT 1.05f
+#define VC_SLOPE 0.016f
 typedef int8_t VRow[VC_NC];
 struct VTpl { uint8_t n; int8_t f[VC_NF][VC_NC]; };
 VTpl* vt = NULL; VRow* vcNow = NULL; float *vcRe = NULL, *vcIm = NULL, *vcFt = NULL, *vcMe = NULL, *vcEn = NULL;
-bool vcOk = false, fsOk = false, teachOn = false; volatile int teachIdx = -1; int teachPg = 0; String cmdMsg = ""; int vcGot = 0;
+bool vcOk = false, fsOk = false, teachOn = false, vcFit = false; volatile bool micHot = false; volatile int teachIdx = -1; int teachPg = 0; String cmdMsg = ""; int vcGot = 0;
 volatile bool listenOn = false; unsigned long listenAt = 0;        // VOICE stays on until he taps it again (or 90 seconds with nothing said)
 static const char* const VC_NAME[VC_ORD] = {"LIGHTS ON", "LIGHTS OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAMERA ON", "CAMERA OFF"};
 static const char* const VC_CMD[VC_ORD] = {"LIGHT ON", "LIGHT OFF", "MUSIC ON", "MUSIC OFF", "MUSIC UP", "MUSIC DOWN", "NEXT SONG", "CAM ON", "CAM OFF"};
@@ -461,7 +466,7 @@ int LCD_SCK = 48, LCD_MISO = 12, LCD_MOSI = 13, LCD_CS = 40, LCD_DC = 21, LCD_BL
 #define LCD_W 320
 #define LCD_H 240
 #define FW 12
-#define BOX_VER "7.2"
+#define BOX_VER "7.3"
 #define FH 24
 #define FB 2
 static const uint8_t FONT[] PROGMEM = {       // letters 32..126, made by a script from DejaVu Sans Mono Bold
@@ -6197,7 +6202,7 @@ void auFill(int16_t* buf, int n){                                // makes the ne
     if(muPlay){                                                   // real music (or the sound of a web page): internet radio or a song from the SD card
       static bool muGo = false; uint32_t av = muH - muT;
       if(!muGo && av >= 8000) muGo = true;                        // ran dry: wait for half a second of sound, so it never stutters
-      if(muBuf && muGo){ if(av){ int mv = muBuf[muT & (MU_N - 1)]; s += vPlay ? (mv >> 3) : ((mv * 3) >> 2); muT++; } else muGo = false; }      // quiet while Mary talks
+      if(muBuf && muGo){ if(av){ int mv = muBuf[muT & (MU_N - 1)]; s += (vPlay || micHot) ? (mv >> 3) : ((mv * 3) >> 2); muT++; } else muGo = false; }      // quiet while Mary talks, and while he is giving an order
     }
     else if(musicOn){
       if(muLeft <= 0){
@@ -6207,7 +6212,7 @@ void auFill(int16_t* buf, int n){                                // makes the ne
         muInc = key ? (uint32_t)((440.0 * pow(2.0, (key - 69) / 12.0)) * 4294967296.0 / AU_RATE) : 0; muPh = 0;
       }
       if(muInc){ int pos = muTot - muLeft, e = 62 - (int)((long)pos * 34 / (muTot > 0 ? muTot : 1)); if(pos < 60) e = e * pos / 60; if(muLeft < 800) e = e * muLeft / 800;      // rings like a bell: strong, then fading
-        s += (SINE[muPh >> 24] * e) + (SINE[(muPh >> 23) & 255] * e) / 3 + (SINE[muPh3 >> 24] * e) / 2 + (SINE[muPh2 >> 24] * 30);      // the note, its octave, a second voice a hair apart, and a soft low voice under it
+        { int mt = (SINE[muPh >> 24] * e) + (SINE[(muPh >> 23) & 255] * e) / 3 + (SINE[muPh3 >> 24] * e) / 2 + (SINE[muPh2 >> 24] * 30); s += micHot ? (mt >> 3) : mt; }      // the note, its octave, a second voice a hair apart, and a soft low voice under it
         muPh += muInc; muPh3 += muInc + (muInc >> 8); muPh2 += muInc >> 1; }
       muLeft--;
     }
@@ -6960,7 +6965,7 @@ void handleTouch(){                                              // live touch n
   h += "Pressed now: <b>" + String(tpDown ? "YES" : "no") + "</b><br>Taps counted: " + String(tpTaps) + "<br>";
   h += "Strength: " + String(tpZ) + " (z1 " + String(tpZ1) + ", z2 " + String(tpZ2) + ")<br>Raw: " + String(tpRX) + ", " + String(tpRY) + "<br>";
   h += "Last press at: " + String(tpLX) + ", " + String(tpLY) + "<br>Chip silent count: " + String(tpStuck) + "<br>";
-  h += "<small>Mary&#39;s Magic Box 7.2. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
+  h += "<small>Mary&#39;s Magic Box 7.3. Press the yellow screen and watch these numbers.</small><p><a href=/ style=color:#9cf>Back to setup</a>";
   web.send(200, "text/html", h);
 }
 bool hDn = false, hDrag = false; int hX0 = 0, hY0 = 0, hP0 = 0, hUp = 0;
@@ -7510,22 +7515,26 @@ static float vcBest(const VTpl* t){                                // the closes
   float best = 1e9f;
   for(int g = 0; g < 3; g++){
     if(vcGn[g] < 6) continue;
-    for(int sl = 0; sl < VC_SL; sl++) if(t[sl].n){ float d = vcDist(vcG[g], vcGn[g], t[sl].f, t[sl].n, 45.0f); if(d < best) best = d; }
+    for(int sl = 0; sl < VC_SL; sl++) if(t[sl].n){ float d = vcDist(vcG[g], vcGn[g], t[sl].f, t[sl].n, 95.0f); if(d < best) best = d; }
   }
   return best;
 }
 // which taught order was just said.  -1 = not sure, and then nothing is done
-static int vcPick(const int16_t* x, int n, int* shown){
+static int vcPick(const int16_t* x, int n, int* shown, int* almost){
   float per[VC_ORD]; float d1 = 1e9f, d2 = 1e9f; int b = -1;
   vcGuess(x, n);
-  for(int o = 0; o < VC_ORD; o++){ per[o] = vcBest(&vt[o * VC_SL]); if(per[o] < d1){ d1 = per[o]; b = o; } }
+  for(int o = 0; o < VC_ORD; o++){ per[o] = vcBest(&vt[o * VC_SL]); if(per[o] < d1){ d1 = per[o]; b = o; } delay(1); }      // a breath between orders, so the music keeps flowing
   if(shown) *shown = d1 > 998.0f ? 999 : (int)(d1 + 0.5f);
+  if(almost) *almost = b;                                          // which order it nearly was, so the screen can say so
   if(b < 0 || d1 > 998.0f) return -1;
   for(int o = 0; o < VC_ORD; o++) if(o != b && per[o] < d2) d2 = per[o];      // the next nearest order
-  float intra = 1e9f;                                              // how alike his own teachings were: that sets how close is close enough
-  for(int i = 0; i < VC_SL; i++) for(int j = i + 1; j < VC_SL; j++){ VTpl* p = &vt[b * VC_SL + i]; VTpl* r = &vt[b * VC_SL + j]; if(p->n && r->n){ float d = vcDist(p->f, p->n, r->f, r->n, 45.0f); if(d < intra) intra = d; } }
+  float intra = 1e9f, isum = 0; int ic = 0;                        // how much his own teachings differ from each other: that sets how close is close enough
+  for(int i = 0; i < VC_SL; i++) for(int j = i + 1; j < VC_SL; j++){ VTpl* p = &vt[b * VC_SL + i]; VTpl* r = &vt[b * VC_SL + j]; if(p->n && r->n){ float d = vcDist(p->f, p->n, r->f, r->n, 60.0f); if(d < 1e8f){ isum += d; ic++; } } }
+  if(ic) intra = isum / ic;                                        // the usual difference, not the smallest one, so more teachings do not make it stricter
   float lim = intra > 1e8f ? VC_LIM0 : intra * VC_K; if(lim < VC_LIM0) lim = VC_LIM0; if(lim > VC_LIM1) lim = VC_LIM1;
-  if(d1 < lim && (d2 > 998.0f || d2 / d1 > VC_RAT)) return b;
+  float need = VC_RAT + VC_SLOPE * (d1 - 22.0f); if(need < VC_RAT) need = VC_RAT; if(need > 1.45f) need = 1.45f;      // the further from how he taught it, the clearer the winner has to be
+  if(d2 > 998.0f) d2 = 95.0f;                                      // nothing else came near at all
+  if(d1 < lim && d2 / d1 > need){ vcFit = d1 < lim * 0.8f && d2 / d1 > need + 0.2f; return b; }
   return -1;
 }
 // ---- 7.2 voice core end
@@ -7565,8 +7574,20 @@ int16_t* recLoud(){ int16_t* use = recL; long eL = 0, eR = 0; for(int i = 0; i <
 bool vcMatch(){                                                    // VOICE: the box's own ears.  true = an order was understood right here
   if(!vcOk || !vcGot || recN < 12000) return false;
   int shown = 999;
-  int o = vcPick(recLoud() + 3200, recN - 3200, &shown);           // the first 0.2 second is the tap and its beep: left out
-  if(o < 0){ cmdMsg = String("NOT SURE (") + String(shown) + ")"; return false; }      // the number tells Moto how close it was
+  vcFit = false;
+  int almost = -1;
+  int o = vcPick(recLoud() + 3200, recN - 3200, &shown, &almost);  // the first 0.2 second is the tap and its beep: left out
+  if(o < 0){                                                       // not sure: say what it nearly heard and how far off it was, so he can just say it again
+    cmdMsg = (almost >= 0 && shown < 900 ? String(VC_NAME[almost]) + "? " : String("NOT SURE ")) + "(" + String(shown) + ")";
+    return false;
+  }
+  if(vcFit){                                                      // it was plainly this one: keep it as one more teaching, so his voice is known better tomorrow
+    for(int sl = 0; sl < VC_SL; sl++) if(!vt[o * VC_SL + sl].n){
+      int m = vcFeat(recLoud() + 3200, recN - 3200, vcNow);
+      if(m >= 8){ vt[o * VC_SL + sl].n = (uint8_t)m; memcpy(vt[o * VC_SL + sl].f, vcNow, (size_t)m * VC_NC); vcSave(o * VC_SL + sl); vcCount(); }
+      break;
+    }
+  }
   aiCmd = VC_CMD[o]; cmdWhy = 0; cmdMsg = ""; return true;
 }
 void vcTeach(){                                                    // TEACH: each order is said twice, and more tries make it better
@@ -7673,7 +7694,7 @@ void aiTask(void* arg){
               unsigned long el = millis() - t0;
               if(el > 250){
                 if(lvS < nf) nf = lvS;
-                if(lvS > nf * 3 + 80){ spoke = true; lastSp = millis(); }
+                if(lvS > nf * 3 + 80){ if(!spoke && cmdMode) micHot = true; spoke = true; lastSp = millis(); }      // he started talking: the music drops right down so the box hears him, not itself
                 if(spoke && el > 900 && millis() - lastSp > 550) aiRec = false;
               }
             }
@@ -7687,7 +7708,7 @@ void aiTask(void* arg){
         }
         break;
       }
-      aiRec = false;
+      aiRec = false; micHot = false;
       if(cmdMode && !spoke) recN = 0;                              // nobody said anything: nothing to work out, and nothing on the screen
       if(callMode){ if(recN >= 4800) callSend(); callMode = false; aiState = 0; continue; }      // CALL: off to the other boxes
       if(recN < 6400){ aiText = "Hold the TALK button the whole time you speak."; aiCmd = ""; cmdWhy = 0; vN = 0; aiState = 3; continue; }      // under 0.4 seconds
@@ -8290,7 +8311,8 @@ void sdStart(){
   } else Serial.println("No SD card.");
   if(psramFound()){
     muBuf = (int16_t*)ps_malloc(MU_N * 2); nfBuf = (uint8_t*)ps_malloc(NF_N);
-    if(muBuf){ muOut = new MuOut(); xTaskCreatePinnedToCore(sdTask, "music", 16384, NULL, 1, NULL, 0); }
+    // 7.3: the music sits above the listening, so it never stutters or stops while VOICE is on
+    if(muBuf){ muOut = new MuOut(); xTaskCreatePinnedToCore(sdTask, "music", 16384, NULL, 2, NULL, 0); }
   }
 #endif
 }
@@ -8301,7 +8323,9 @@ void aiShow(){
   if(!quick){ hubAns = aiText; ansPg = 0; }
   hubWait = false;
   if(aiCmd.length()){
-    if(aiCmd == "MUSIC ON"){ if(!musicOn){ musicOn = true; } done = realMusic() ? songName(sdCur) : String("MUSIC ON"); }
+    if(aiCmd == "MUSIC ON"){
+      if(btSel()) sdWant = 0;                                      // the phone Bluetooth station is picked and silent: go to the radio instead
+      musicOn = true; done = realMusic() ? songName(btSel() ? 0 : sdCur) : String("MUSIC ON"); }
     else if(aiCmd == "MUSIC OFF"){ musicOn = false; done = "MUSIC OFF"; }
     else if(aiCmd == "WEB ON"){ if(!webOn){ webOn = true; webAt = 0; webAct = ""; webErr = false; webFull = true; webSkip = true; } done = "WEB ON"; }
     else if(aiCmd == "WEB OFF"){ if(webOn){ webOn = false; lcdShown = ""; } done = "WEB OFF"; }
@@ -8327,7 +8351,7 @@ void aiShow(){
   if(quick){                                                       // VOICE and TEACH: a beep and a few words at the bottom of the screen
     if(teachIdx >= 0){ teachIdx = -1; cmdMsg = "DID NOT HEAR YOU"; }
     if(done.length()){ fxNote(1900, 60); showMsg(done); listenAt = millis(); }      // it did something: keep listening a while longer
-    else if(cmdMsg.length()){ if(!(listenOn && cmdMsg.startsWith("NOT SURE"))) fxNote(cmdMsg.indexOf(" OK") > 0 || cmdMsg.startsWith("GOOD") ? 1900 : 500, 80); showMsg(cmdMsg); }
+    else if(cmdMsg.length()){ if(!(listenOn && cmdMsg.indexOf("(") > 0)) fxNote(cmdMsg.indexOf(" OK") > 0 || cmdMsg.startsWith("GOOD") ? 1900 : 500, 80); showMsg(cmdMsg); }
     else if(!vcGot) showMsg(cmdWhy == 1 ? "JETSON NOT ANSWERING" : cmdWhy == 2 ? "JETSON VOICE NOT READY" : "TAP TEACH FIRST");
     else if(!listenOn) showMsg("DID NOT CATCH IT");
     cmdMsg = "";
